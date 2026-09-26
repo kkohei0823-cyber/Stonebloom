@@ -44,7 +44,10 @@ from collections import Counter
 from functools import lru_cache
 
 from config import CONFIG, config_version
-from game import Piece, type_multiplier, is_damage_nullified
+import math
+
+from config import RP_SCALE
+from game import Piece, type_multiplier, damage_multiplier, is_damage_nullified, piece_speed
 
 
 # ============================================================
@@ -212,7 +215,7 @@ def _existing_incoming_damage(board, target_pos, player, exclude_positions=(), r
         if target_pos not in piece_targets:
             continue
         dmg_each = cfg["atk"] / len(piece_targets)
-        total += dmg_each * type_multiplier(piece.kind, target_kind)
+        total += dmg_each * damage_multiplier(piece.kind, target_kind)
 
     # --- 射程: 事前計算済みリストを使い回す ---
     if ranged_friends is None:
@@ -230,7 +233,7 @@ def _existing_incoming_damage(board, target_pos, player, exclude_positions=(), r
         if target_pos not in piece_targets:
             continue
         dmg_each = cfg["atk"] / len(piece_targets)
-        total += dmg_each * type_multiplier(piece.kind, target_kind)
+        total += dmg_each * damage_multiplier(piece.kind, target_kind)
 
     return total
 
@@ -311,7 +314,7 @@ def _potential_incoming_damage(board, pos, kind, player, exclude=None, ranged_en
         if pos not in enemy_targets:
             enemy_targets.append(pos)
         dmg_each = cfg["atk"] / len(enemy_targets)
-        total += dmg_each * type_multiplier(piece.kind, kind)
+        total += dmg_each * damage_multiplier(piece.kind, kind)
 
     # --- 射程駒: 全駒スキャンが必要なので、事前計算済みリストを使い回す ---
     if ranged_enemies is None:
@@ -332,7 +335,7 @@ def _potential_incoming_damage(board, pos, kind, player, exclude=None, ranged_en
         if pos not in enemy_targets:
             enemy_targets.append(pos)
         dmg_each = atk / len(enemy_targets)
-        total += dmg_each * type_multiplier(piece.kind, kind)
+        total += dmg_each * damage_multiplier(piece.kind, kind)
 
     return total
 
@@ -730,7 +733,7 @@ def _potential_attack(board, pos, kind, player, exclude=None, vp_spot_positions=
     base_dmg = 0.0
     for p in targets:
         defender_kind = board.grid[p].kind
-        this_dmg = dmg_each * type_multiplier(kind, defender_kind)  # ②分割後に相性倍率
+        this_dmg = dmg_each * damage_multiplier(kind, defender_kind)  # ②分割後に相性倍率
         total_dmg += this_dmg
         if defender_kind == "本拠":
             base_dmg += this_dmg
@@ -746,6 +749,53 @@ def _potential_attack(board, pos, kind, player, exclude=None, vp_spot_positions=
     # 三すくみ導入により合計与ダメージはatkから変化しうるため、相性反映後の
     # 実際の合計(total_dmg)を返す（attack/base_pressure評価に三すくみを正しく反映するため必須）。
     return total_dmg, len(kill_targets), vp_spot_kills, rp_spot_kills, base_dmg
+
+
+# ============================================================
+# 2026-09-26追加: Sprigling時代のAIビルドモード用重み（weights.py Tier5）。
+# heuristic_bot / search_bot_skeleton の両方からこの関数群だけを呼ぶ
+# （片方のボットにだけ配線されて反映漏れする事故の再発防止）。
+# ============================================================
+def piece_value(cfg, weights):
+    """駒1体の価値の目安（efficiency計算の分子）。hp_valuation_bonus=0なら従来式
+    hp/100 + atk/10 と完全に同じ（＝攻撃力1をHP10と同価値とみなす）。"""
+    return cfg["hp"] * (1.0 + weights["hp_valuation_bonus"]) / 100 + cfg["atk"] / 10
+
+
+def sprigling_place_bonus(board, pos, kind, player, weights, on_vp_spot, exclude=None,
+                          include_affinity=True):
+    """配置・移動先posでのTier5重みの加点合計。"""
+    cfg = CONFIG["pieces"][kind]
+    score = 0.0
+    if include_affinity and kind.startswith("S:"):
+        score += weights["sprigling_affinity"]
+    speed_pref = weights["speed_edge_pref"]
+    if speed_pref:
+        # 隣接する敵との素早さの比（2を底とする対数、±2で打ち切り）の合計。
+        # 自分が2倍速い相手の隣は+1、2倍遅い相手の隣は-1。
+        my = piece_speed(kind)
+        for n in board.adjacent_positions(pos):
+            if n == exclude:
+                continue
+            p = board.grid.get(n)
+            if p is None or p.owner == player or p.kind == "本拠":
+                continue
+            ratio = my / max(piece_speed(p.kind), 1e-9)
+            score += speed_pref * max(-2.0, min(2.0, math.log2(ratio)))
+    if on_vp_spot and weights["heavy_anchor_pref"]:
+        score += weights["heavy_anchor_pref"] * cfg["hp"] / 200
+    return score
+
+
+def sprigling_production_bonus(kind, weights):
+    """動員候補kindへのTier5重みの加点合計。"""
+    cfg = CONFIG["pieces"][kind]
+    score = weights["sprigling_affinity"] if kind.startswith("S:") else 0.0
+    rel = cfg["produce_cost"] / (4 * RP_SCALE)  # 苔兵(400RP)=1.0
+    if rel > 0:
+        score += weights["swarm_pref"] * (1.0 / rel - 1.0)
+    score += weights["elite_pref"] * (rel - 1.0)
+    return score
 
 
 def _neighbors_count(board, pos, player, exclude=None):

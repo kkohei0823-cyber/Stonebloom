@@ -17,6 +17,7 @@ Sprigling（ステータスが固定でない駒）時代の検証環境。3つ�
 サブコマンド:
   calibrate        Spriglingのステータス式の静的チェック（階級ごとの強さ、既存駒との1対1）
   compare          AI同士の比較。--random-rosters でペアごとに違うSprigling構成を両者に配る
+  classes          重量階級ごとのバランス（vs-base: 既存5種のみの相手と / bring: 階級総当たり）
   exploit          壊れたビルドの自動探索
   placement-sweep  配置コスト比率ごとの、Spriglingの採用率と勝率
   aa-test          両側同条件の対局でスコアが0.5になるか（検証環境そのもののバグ検出）
@@ -101,7 +102,8 @@ def save_record(command, args, results):
 #   "config_overrides": dict|None,                   apply_config_overrides()に渡す
 #   "spriglings": {name: {"genome": g, "seed": int}}, 登録するSprigling（駒種名は"S:<name>"）
 #   "rosters": {"A": [kind...]|None, "B": ...},       None=登録済み全駒種
-#   "bots": {"A": "heuristic", "B": "heuristic"},
+#   "bots": {"A": "heuristic", "B": "heuristic"},  （{"type": "heuristic", "weights": {...}} も可）
+#   "start_extra": {"A": [kind...], "B": ...},        最初の手駒に追加する駒（省略可）
 # }
 # 側A/Bは先後入れ替えに追従する（A側のロースター・ボットはA側が先手でも後手でも同じ）。
 # ============================================================
@@ -122,13 +124,21 @@ def apply_scenario(sc):
     _applied_key = key
 
 
-def make_bot(kind, rng_seed):
+def make_bot(spec, rng_seed):
+    """spec: "heuristic" / "search" / "random"、または {"type": ..., "weights": {重みの上書き}}。"""
+    weights = None
+    kind = spec
+    if isinstance(spec, dict):
+        kind = spec["type"]
+        if spec.get("weights"):
+            from weights import resolve_weights
+            weights = resolve_weights(spec["weights"])
     if kind == "heuristic":
         from heuristic_bot import HeuristicBot
-        return HeuristicBot(rng=random.Random(rng_seed))
+        return HeuristicBot(weights=weights, rng=random.Random(rng_seed))
     if kind == "search":
         from search_bot_skeleton import SearchBot
-        return SearchBot()  # rng=None: 完全決定論
+        return SearchBot(weights=weights)  # rng=None: 完全決定論
     if kind == "random":
         return RandomBot()
     raise ValueError(kind)
@@ -140,7 +150,9 @@ def play_game(sc, seed, a_seat):
     random.seed(f"game-{seed}-{a_seat}")  # RandomBotはグローバル乱数を使う
     b_seat = 1 - a_seat
     rosters = sc.get("rosters") or {}
-    game = Game(roster={a_seat: rosters.get("A"), b_seat: rosters.get("B")})
+    extra = sc.get("start_extra") or {}
+    game = Game(roster={a_seat: rosters.get("A"), b_seat: rosters.get("B")},
+                extra_reserve={a_seat: extra.get("A"), b_seat: extra.get("B")})
     bots = {a_seat: make_bot(sc["bots"]["A"], f"bot-{seed}-{a_seat}-A"),
             b_seat: make_bot(sc["bots"]["B"], f"bot-{seed}-{a_seat}-B")}
     res = game.run(bots)
@@ -316,6 +328,65 @@ def _run_with_sprt(tasks, args):
         if verdict:
             break
     return done
+
+
+# ============================================================
+# classes: 重量階級ごとのバランス
+# ============================================================
+CLASS_PAIRS = (("light", "middle"), ("middle", "heavy"), ("light", "heavy"))
+
+
+def _class_genomes(seed, wc, n):
+    rng = random.Random(f"class-{seed}-{wc}")
+    return [S.random_genome(rng, wc) for _ in range(n)]
+
+
+def class_scenarios(mode, seed, overrides, bot, per_class=3):
+    """1ペア分のシナリオを {行ラベル: scenario} で返す。ビルドはシードから決まるので、
+    overrides（ステータス式・戦闘ルール）だけを変えた比較は同じビルドどうしの対応比較になる。"""
+    base = list(BASE_KINDS)
+    out = {}
+    if mode == "vs-base":
+        for wc in ("light", "middle", "heavy"):
+            spr = {f"{wc}{i}": {"genome": g, "seed": 0}
+                   for i, g in enumerate(_class_genomes(seed, wc, per_class))}
+            out[wc] = {"config_overrides": overrides, "spriglings": spr,
+                       "rosters": {"A": base + [f"S:{n}" for n in spr], "B": base},
+                       "bots": {"A": bot, "B": bot}}
+    else:  # bring: 両者が1体ずつ持ち込み（最初の手駒）、同じ駒を追加動員もできる
+        for wa, wb in CLASS_PAIRS:
+            ga = _class_genomes(seed, wa, 1)[0]
+            gb = _class_genomes(seed, wb, 1)[0]
+            spr = {"a": {"genome": ga, "seed": 0}, "b": {"genome": gb, "seed": 0}}
+            out[f"{wa}_vs_{wb}"] = {"config_overrides": overrides, "spriglings": spr,
+                                    "rosters": {"A": base + ["S:a"], "B": base + ["S:b"]},
+                                    "start_extra": {"A": ["S:a"], "B": ["S:b"]},
+                                    "bots": {"A": bot, "B": bot}}
+    return out
+
+
+def run_classes(mode, pairs, overrides, bot, workers, seed="0"):
+    tasks, labels = [], []
+    for j in range(pairs):
+        for label, sc in class_scenarios(mode, f"{seed}-{j}", overrides, bot).items():
+            tasks.append((sc, f"cls-{seed}-{j}"))
+            labels.append(label)
+    res = run_pairs(tasks, workers)
+    rows = {}
+    for label in dict.fromkeys(labels):
+        rs = [r for l, r in zip(labels, res) if l == label]
+        rows[label] = dict(lab_stats.summarize([r["pair_score"] for r in rs]),
+                           adoption=adoption(rs), rounds=round(sum(
+                               g["rounds"] for r in rs for g in r["games"]) / (2 * len(rs)), 1))
+    return rows
+
+
+def cmd_classes(args):
+    overrides = json.loads(args.overrides) if args.overrides else None
+    rows = run_classes(args.mode, args.pairs, overrides, args.bot, args.workers, args.seed)
+    for label, r in rows.items():
+        print(f"  {label:16s} score={r['score']:.3f} CI{r['ci95']} 採用率{r['adoption']:.0%} 平均{r['rounds']}R")
+    print("record:", save_record("classes", args, {"rows": rows}))
 
 
 # ============================================================
@@ -495,6 +566,14 @@ def main(argv=None):
     p.add_argument("--sprt", help="例 0.5,0.55 （H0,H1の期待スコア）。指定するとbatchごとに早期終了判定")
     p.add_argument("--batch", type=int, default=20)
     p.set_defaults(func=cmd_compare)
+
+    p = sub.add_parser("classes")
+    p.add_argument("--mode", choices=("vs-base", "bring"), default="vs-base")
+    p.add_argument("--pairs", type=int, default=100)
+    p.add_argument("--overrides", help='CONFIGの上書き(JSON) 例: \'{"sprigling_stats":{"model":"physical"}}\'')
+    p.add_argument("--bot", default="heuristic", choices=("heuristic", "search"))
+    p.add_argument("--seed", default="0")
+    p.set_defaults(func=cmd_classes)
 
     p = sub.add_parser("exploit")
     p.add_argument("--weight-class", choices=("light", "middle", "heavy"))

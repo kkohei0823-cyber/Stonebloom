@@ -121,6 +121,29 @@ def role_of(kind):
     return CONFIG["pieces"][kind].get("role", kind)
 
 
+def piece_speed(kind):
+    """素早さ。未指定の駒種（既存5種・本拠）はCONFIG["combat"]["base_speed"]。"""
+    return CONFIG["pieces"][kind].get("speed", CONFIG["combat"]["base_speed"])
+
+
+def hit_count(attacker_kind, defender_kind):
+    """multi_attack有効時の攻撃回数。素早さの比がthresholds[i]以上なら i+2 回。"""
+    cb = CONFIG["combat"]
+    if not cb["multi_attack"]:
+        return 1
+    ratio = piece_speed(attacker_kind) / max(piece_speed(defender_kind), 1e-9)
+    n = 1
+    for i, th in enumerate(cb["multi_attack_thresholds"]):
+        if ratio >= th:
+            n = i + 2
+    return n
+
+
+def damage_multiplier(attacker_kind, defender_kind):
+    """分割後のダメージに掛ける倍率＝属性相性×攻撃回数。"""
+    return type_multiplier(attacker_kind, defender_kind) * hit_count(attacker_kind, defender_kind)
+
+
 def type_multiplier(attacker_kind, defender_kind):
     """属性相性（三すくみ）によるダメージ倍率（検証ハンドブック6章）。
     攻撃側・防御側の駒種が持つ属性（CONFIG["pieces"][kind]["attribute"]）で判定し、
@@ -164,32 +187,54 @@ def resolve_combat(board, verbose=False):
     無効化対象と判定される相手は、そもそも targets（=呼吸点方式の分割母数）に含めない。
     倍率(type_multiplier)ではなく対象からの除外にしているのは、「無効化された相手がいる
     ことで他の対象への分割ダメージが薄まる」という不自然な副作用を避けるため
-    （工兵は弓兵の攻撃対象として最初から存在しないものとして扱う）。"""
-    damage = {}
-    for pos, piece in board.grid.items():
-        if not piece.is_alive() or piece.atk <= 0:
-            continue
-        cfg = CONFIG["pieces"][piece.kind]
-        if cfg["ranged"]:
-            reach = 1 + cfg["range"]
-            targets = [p for p in board.grid
-                       if board.grid[p].owner != piece.owner
-                       and board.distance(pos, p) <= reach
-                       and not is_damage_nullified(piece.kind, board.grid[p].kind)]
-        else:
-            targets = [p for p in board.adjacent_positions(pos)
-                       if p in board.grid and board.grid[p].owner != piece.owner
-                       and not is_damage_nullified(piece.kind, board.grid[p].kind)]
-        if not targets:
-            continue
-        dmg_each = piece.atk / len(targets)  # ①分割（相性適用前）
-        for t in targets:
-            mult = type_multiplier(piece.kind, board.grid[t].kind)  # ②分割後に相性倍率
-            damage[t] = damage.get(t, 0) + dmg_each * mult
+    （工兵は弓兵の攻撃対象として最初から存在しないものとして扱う）。    2026-09-26追加: 素早さ（CONFIG["combat"]）。既存5種は全て基準速度なので、
+    既存駒どうしの戦闘結果はこの追加で一切変わらない。
+      initiative   : 速い駒のグループから順に攻撃し、そのグループのダメージを適用して
+                     撃破された駒は、それより遅いグループの攻撃に参加できない
+                     （同じ速さどうしは従来通り同時）。
+      multi_attack : 攻撃側の素早さが相手の2倍以上なら2回、3倍以上なら3回…と、
+                     その相手へのダメージを回数倍する（damage_multiplier()参照）。"""
+    cb = CONFIG.get("combat", {})
+    attackers = [(pos, piece) for pos, piece in board.grid.items()
+                 if piece.is_alive() and piece.atk > 0]
+    if cb.get("initiative"):
+        speeds = sorted({piece_speed(p.kind) for _, p in attackers}, reverse=True)
+        tiers = [[(pos, p) for pos, p in attackers if piece_speed(p.kind) == sp] for sp in speeds]
+    else:
+        tiers = [attackers]
 
-    for pos, dmg in damage.items():
-        board.grid[pos].hp -= dmg
-    removed = board.remove_dead()
+    damage = {}
+    removed = []
+    for tier in tiers:
+        tier_damage = {}
+        for pos, piece in tier:
+            if not piece.is_alive():
+                continue  # より速いグループの攻撃で既に撃破されている
+            cfg = CONFIG["pieces"][piece.kind]
+            if cfg["ranged"]:
+                reach = 1 + cfg["range"]
+                targets = [p for p in board.grid
+                           if board.grid[p].owner != piece.owner
+                           and board.grid[p].is_alive()
+                           and board.distance(pos, p) <= reach
+                           and not is_damage_nullified(piece.kind, board.grid[p].kind)]
+            else:
+                targets = [p for p in board.adjacent_positions(pos)
+                           if p in board.grid and board.grid[p].owner != piece.owner
+                           and board.grid[p].is_alive()
+                           and not is_damage_nullified(piece.kind, board.grid[p].kind)]
+            if not targets:
+                continue
+            dmg_each = piece.atk / len(targets)  # ①分割（相性適用前）
+            for t in targets:
+                mult = damage_multiplier(piece.kind, board.grid[t].kind)  # ②分割後に相性・連撃倍率
+                tier_damage[t] = tier_damage.get(t, 0) + dmg_each * mult
+        for pos, dmg in tier_damage.items():
+            board.grid[pos].hp -= dmg
+            damage[pos] = damage.get(pos, 0) + dmg
+        if len(tiers) > 1:
+            removed += board.remove_dead()
+    removed += board.remove_dead()
     if verbose:
         for pos, dmg in damage.items():
             print(f"  {pos} に {dmg:.1f} ダメージ")
@@ -343,12 +388,15 @@ class Economy:
 # ゲーム本体
 # ============================================================
 class Game:
-    def __init__(self, roster=None):
+    def __init__(self, roster=None, extra_reserve=None):
         """roster: {player: 動員できる駒種の集合}（省略時・Noneの要素はCONFIG["pieces"]の全駒種）。
-        検証環境で片方のプレイヤーにだけSpriglingを使わせる、といった非対称な対局に使う。"""
+        検証環境で片方のプレイヤーにだけSpriglingを使わせる、といった非対称な対局に使う。
+        extra_reserve: {player: [駒種...]} 最初の手駒に追加する駒（持ち込んだSprigling等）。"""
         self.board = Board(CONFIG["board_size"])
         self.econ = Economy()
-        self.reserve = {0: list(CONFIG["starting_reserve"]), 1: list(CONFIG["starting_reserve"])}
+        extra_reserve = extra_reserve or {}
+        self.reserve = {p: list(CONFIG["starting_reserve"]) + list(extra_reserve.get(p) or [])
+                        for p in (0, 1)}
         self.engineer_positions = set()
         self.round_number = 0
         self.turn_order = [0, 1]  # パイルールでスワップされうる（現在は凍結）

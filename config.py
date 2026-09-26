@@ -105,6 +105,15 @@ CONFIG = {
         "pairs": {"弓兵": "工兵"},
     },
 
+    # 素早さ（game.resolve_combat参照）。既存5種は全てbase_speedなので、どちらのフラグを
+    # 有効にしても既存駒どうしの戦闘は変わらない（Spriglingとの戦闘にだけ効く）。
+    "combat": {
+        "base_speed": 100,
+        "initiative": False,       # 速い駒から先に攻撃し、撃破された駒は反撃できない
+        "multi_attack": False,     # 素早さの比が閾値以上なら攻撃回数が増える
+        "multi_attack_thresholds": [2.0, 3.0, 4.0],   # 2倍→2回, 3倍→3回, 4倍→4回
+    },
+
     "starting_reserve": ["歩兵", "騎兵", "重装兵", "弓兵", "工兵"],
     "base_positions": {0: (4, 8), 1: (4, 0)},  # 2026-09-03変更: 先手(player0)=下段中央 / 後手(player1)=上段中央
 
@@ -140,6 +149,18 @@ CONFIG = {
     #     shape = (攻撃力の生値 / 耐久の生値) / shape_ref_ratio  を [shape_min, shape_max] にクランプし、
     #     攻撃力/HP = ref_atk_hp_ratio × shape（shape=1で苔兵と同じ比率 36/200）。
     "sprigling_stats": {
+        # "cost": 強さの総量を動員コストで決める（下のpower_*）
+        # "physical": 部位の式と重量からHP・攻撃力・素早さを直接決める（下のphysical）
+        "model": "cost",
+        "physical": {
+            "weight_ref": 250,        # 重量の基準点（中量級の標準ビルド付近）
+            "atk_scale": 2.0,         # R/H/Wの攻撃力が既存駒並み(約40)になる値
+            "atk_weight_exp": 1.0,    # 攻撃力 ∝ 技の威力 × (重量/基準)^これ
+            "hp_scale": 1.4,          # R/H/WのHPが既存駒並み(約230)になる値
+            "hp_weight_exp": 0.5,     # HP ∝ 耐久合計 × (重量/基準)^これ
+            "speed_weight_exp": 0.5,  # 素早さ ∝ (基準/重量)^これ
+            "leg_speed_coef": 0.1,    # 素早さ × (1 + これ × 脚の平均length)
+        },
         "power_per_rp": 18.0,
         # 総合力を動員コストの何乗で伸ばすか（anchor RPでの値は power_per_rp×anchor で固定）。
         #   power = power_per_rp × anchor × (動員コスト/anchor)^power_cost_exponent

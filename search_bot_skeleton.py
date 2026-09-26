@@ -32,6 +32,7 @@ from scoring_common import (
     _add_reserve_kind_counts, _spot_position_sets,
     _opening_tempo_multiplier, _comeback_desperation_fraction,
     SIGNATURE_AFFINITY_KEY,
+    piece_value, sprigling_place_bonus, sprigling_production_bonus,
     # 2026-09-10追加（analyze_tuning_run_handoff.md 3.22.5節・3.23節参照）:
     # favorable_matchup_bonus/unfavorable_matchup_penalty/archer_immunity_awareness/
     # base_proximity_alert/center_control/corner_edge_avoidanceがSearchBotに一切
@@ -415,7 +416,9 @@ def _score_actions(game, player, actions, weights=HEURISTIC_WEIGHTS):
                     score += weights["engineer_econ_bonus"]
             # RP100倍化: heuristic_bot.pyと同様、costを旧スケール相当にRP_SCALEで
             # 正規化してからefficiency重みを適用する。
-            score += (cfg["hp"] / 100 + cfg["atk"] / 10) / max(cfg["cost"] / RP_SCALE, 1) * weights["efficiency"]
+            score += piece_value(cfg, weights) / max(cfg["cost"] / RP_SCALE, 1) * weights["efficiency"]
+            score += sprigling_place_bonus(game.board, pos, kind, player, weights,
+                                           pos in vp_tengen or pos in vp_stars)
             dist = game.board.distance(pos, enemy_base)
             # 2026-09-09修正: advance_ramp_rounds。
             score += (game.board.size - dist) * (weights["advance"] * 0.2) * adv_mult
@@ -498,6 +501,9 @@ def _score_actions(game, player, actions, weights=HEURISTIC_WEIGHTS):
 
             # ---- 2026-09-10追加: Tier1/Tier2重み10種の未配線を修正（place側と同じ。
             # 3.22.5節参照）。heuristic_bot.pyのmove側と同じ計算式。----
+            score += sprigling_place_bonus(game.board, dst, piece.kind, player, weights,
+                                           dst in vp_tengen or dst in vp_stars,
+                                           exclude=src, include_affinity=False)
             fav, unfav = _count_matchup_adjacent(game.board, dst, player, piece.kind, exclude=src)
             score += fav * weights["favorable_matchup_bonus"]
             score -= unfav * weights["unfavorable_matchup_penalty"]
@@ -1131,6 +1137,8 @@ class _ProductionEvalContext:
         # 実装がown_kind_counts[kind]の単純な線形加算のため）。diversity_deltaと
         # 同じ理由で、全positions共通の値として1回だけ計算する。
         signature_delta = weights[SIGNATURE_AFFINITY_KEY[role_of(kind)]]
+        # 2026-09-26追加: Tier5（Sprigling重用度・数押し/精鋭志向）。kind単位で一定。
+        signature_delta += sprigling_production_bonus(kind, weights)
 
         # 2026-09-09追加: opening_tempo_pref（3.20節#1）。RPスポットへの配置
         # (pos in self.rp_pts)の場合のみ、own_rp_spots_ownedが1増える分の

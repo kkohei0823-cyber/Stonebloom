@@ -217,29 +217,50 @@ def derive_stats(genome, seed=0):
             move -= 1
     move = max(1, min(3, move))
 
+    powers = raw["part_powers"]
+    atk_raw = (powers[0] if powers else 0.0) + st["atk_secondary_share"] * sum(powers[1:])
+    speed = CONFIG["combat"]["base_speed"]
+
+    if st["model"] == "physical":
+        ph = st["physical"]
+        wr = weight / ph["weight_ref"]
+        # 攻撃力: 技の威力（部位の大きさ×技倍率）に、体重を乗せて殴る分の係数を掛ける
+        atk = max(1, int(ph["atk_scale"] * atk_raw * wr ** ph["atk_weight_exp"] + 0.5))
+        # HP: 全部位の耐久の合計に、体の重さ（＝体の大きさ）の係数を掛ける
+        hp = max(1, int(ph["hp_scale"] * raw["durability"] * wr ** ph["hp_weight_exp"] + 0.5))
+        # 素早さ: 軽いほど速く、脚が長いほど速い（Whittlewispのraw_speedと同じ向き）
+        leg = raw["leg_len"] if raw["leg_count"] else -2.0
+        speed = (CONFIG["combat"]["base_speed"] * wr ** (-ph["speed_weight_exp"])
+                 * max(0.25, 1.0 + ph["leg_speed_coef"] * leg))
+        speed = round(speed, 1)
+        shape = None
+        return _finish(genome, seed, raw, weight, produce_cost, hp, atk, move, speed, shape)
+
     # 総合力（HP×攻撃力）は動員コストで決まり、配分（形）は部位ごとの式で決まる
     anchor = st["power_anchor_cost"]
     power = (st["power_per_rp"] * anchor * (produce_cost / anchor) ** st["power_cost_exponent"]
              * (st["move3_power_mult"] if move == 3 else 1.0))
-    powers = raw["part_powers"]
-    atk_raw = (powers[0] if powers else 0.0) + st["atk_secondary_share"] * sum(powers[1:])
     shape = (atk_raw / raw["durability"]) / st["shape_ref_ratio"]
     shape = max(st["shape_min"], min(st["shape_max"], shape))
     ratio = st["ref_atk_hp_ratio"] * shape  # 攻撃力/HP
     hp = max(1, int(math.sqrt(power / ratio) + 0.5))
     atk = max(1, int(math.sqrt(power * ratio) + 0.5))
+    return _finish(genome, seed, raw, weight, produce_cost, hp, atk, move, speed, round(shape, 3))
 
+
+def _finish(genome, seed, raw, weight, produce_cost, hp, atk, move, speed, shape):
+    st = CONFIG["sprigling_stats"]
     mw = raw["material_weight"]
     attribute = max(sb_config.ATTRIBUTES, key=lambda m: (mw.get(m, 0.0), m == "bind"))
 
     cost = int(produce_cost * st["placement_cost_ratio"] + 0.5)
     return {
-        "hp": hp, "atk": atk, "move": move,
+        "hp": hp, "atk": atk, "move": move, "speed": speed,
         "cost": cost, "produce_cost": produce_cost,
         "upkeep": 0, "ranged": False, "range": 0,
         "attribute": attribute,
         "sprigling": {"weight": round(weight, 2), "weight_class": weight_class_of(weight),
-                      "seed": seed, "shape": round(shape, 3)},
+                      "seed": seed, "shape": shape},
     }
 
 

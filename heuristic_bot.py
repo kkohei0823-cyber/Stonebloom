@@ -72,6 +72,7 @@ from scoring_common import (
     _base_pressure_ramp_multiplier,
     _opening_tempo_multiplier, _comeback_desperation_fraction,
     SIGNATURE_AFFINITY_KEY,
+    piece_value, sprigling_place_bonus, sprigling_production_bonus,
 )
 
 # 2026-08-25追加: Tier1重み#1-10（駒種別の配置/生産優先度）用のキー対応表。
@@ -175,7 +176,7 @@ class HeuristicBot:
                 # RP100倍化: costは新スケール(旧値×RP_SCALE)なので、efficiency側の重みが
                 # 旧スケール準拠でチューニングされている前提が崩れないよう、ここでRP_SCALEで
                 # 割り戻して旧スケール相当の値に正規化してから使う。
-                score += (cfg["hp"] / 100 + cfg["atk"] / 10) / max(cfg["cost"] / RP_SCALE, 1) * self.w["efficiency"]
+                score += piece_value(cfg, self.w) / max(cfg["cost"] / RP_SCALE, 1) * self.w["efficiency"]
                 dist = game.board.distance(pos, enemy_base)
                 # 2026-09-09修正: advance_ramp_rounds（3.19節）。adv_mult=1.0が既定
                 # （weight未設定なら従来通り）。
@@ -183,6 +184,8 @@ class HeuristicBot:
 
                 # ---- Tier1/Tier2 追加重み（2026-08-25追加） ----
                 score += self.w[KIND_TO_PLACE_PREF[role_of(kind)]]
+                score += sprigling_place_bonus(game.board, pos, kind, player, self.w,
+                                               pos in vp_tengen or pos in vp_stars)
                 fav, unfav = _count_matchup_adjacent(game.board, pos, player, kind)
                 score += fav * self.w["favorable_matchup_bonus"]
                 score -= unfav * self.w["unfavorable_matchup_penalty"]
@@ -313,6 +316,9 @@ class HeuristicBot:
 
                 # ---- Tier1/Tier2 追加重み（2026-08-25追加） ----
                 score += self.w[KIND_TO_PLACE_PREF[role_of(piece.kind)]] * 0.5  # 移動は配置ほど強く出さない
+                score += sprigling_place_bonus(game.board, dst, piece.kind, player, self.w,
+                                               dst in vp_tengen or dst in vp_stars,
+                                               exclude=src, include_affinity=False)
                 fav, unfav = _count_matchup_adjacent(game.board, dst, player, piece.kind, exclude=src)
                 score += fav * self.w["favorable_matchup_bonus"]
                 score -= unfav * self.w["unfavorable_matchup_penalty"]
@@ -510,7 +516,7 @@ class HeuristicBot:
             cfg = CONFIG["pieces"][kind]
             # RP100倍化: produce_costは新スケールなので、_effが従来の値域（およそ0.5〜5）を
             # 保つようRP_SCALEで正規化してから使う。
-            base = (cfg["hp"] / 100 + cfg["atk"] / 10) / max(cfg["produce_cost"] / RP_SCALE, 1)
+            base = piece_value(cfg, self.w) / max(cfg["produce_cost"] / RP_SCALE, 1)
             # Tier1 #6-10: 駒種別の生産優先度（2026-08-25追加）。
             # efficiencyと同じレンジに収まるよう単純加算にしている
             # （_effはおよそ0.5〜5程度の値域）。
@@ -643,6 +649,7 @@ class HeuristicBot:
             # 閉じたこちら側とは配線層が異なる点に注意（詳細はscoring_common.py
             # SIGNATURE_AFFINITY_KEYのコメント参照）。
             score += self.w[SIGNATURE_AFFINITY_KEY[role_of(kind)]]
+            score += sprigling_production_bonus(kind, self.w)
 
             return score
 

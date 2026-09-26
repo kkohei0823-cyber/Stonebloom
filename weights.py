@@ -450,13 +450,34 @@ WEIGHT_TIERS = [
     # 優先度は低い」と明記しているため、#4と同じ理由でダミー枠として登録するに
     # 留める（対人戦のクロック機構と合わせて実装すること）。
     {"champion_index": 69, "tier": 4, "key": "endgame_clock_bluff", "label": "終盤クロックブラフ（対人戦向け・実装予約枠）", "default": 0.0, "implemented": False},
+
+    # ---- Tier5: Sprigling時代の重み（2026-09-26新設。撃破70〜75体目） ----
+    # ステータスが固定でない駒（Sprigling）を前提に、「どんな駒をどう評価し、どう使うか」
+    # という個性を作るためのノブ。配線は scoring_common.py の piece_value /
+    # sprigling_place_bonus / sprigling_production_bonus（両ボット共通）。
+    # 全て default=0.0 で従来の挙動と完全に同じ。
+    # 耐久重視度: 駒の価値評価（efficiency）でHPをどれだけ重く見るか。0で従来式
+    #   hp/100+atk/10（攻撃力1=HP10）。0.8で攻撃力1=HP約5.6（苔兵のHP/攻撃力比と同じ）。
+    {"champion_index": 70, "tier": 5, "key": "hp_valuation_bonus", "label": "耐久重視度", "default": 0.0, "implemented": True},
+    {"champion_index": 71, "tier": 5, "key": "sprigling_affinity", "label": "Sprigling重用度", "default": 0.0, "implemented": True},
+    # 速度差活用度: 自分より遅い敵の隣を好み、速い敵の隣を避ける（先制・連撃ルール用）。
+    {"champion_index": 72, "tier": 5, "key": "speed_edge_pref", "label": "速度差活用度", "default": 0.0, "implemented": True},
+    # 重量級拠点守備志向: HPの高い駒ほどVP地点（星・天元）に置きたがる。
+    {"champion_index": 73, "tier": 5, "key": "heavy_anchor_pref", "label": "重量級拠点守備志向", "default": 0.0, "implemented": True},
+    # 数押し志向 / 精鋭志向: 動員コストの安い駒 / 高い駒を好む（苔兵の400RPが基準点）。
+    {"champion_index": 74, "tier": 5, "key": "swarm_pref", "label": "数押し志向", "default": 0.0, "implemented": True},
+    {"champion_index": 75, "tier": 5, "key": "elite_pref", "label": "精鋭志向", "default": 0.0, "implemented": True},
 ]
 
+# 2026-09-26: Tier5新設前に作られたchampion_weights.json等のスナップショットは、
+# これらのキーだけが欠けていても既定値(0.0=従来挙動)で補って読み込んでよい。
+SPRIGLING_TIER_KEYS = frozenset(t["key"] for t in WEIGHT_TIERS if t["tier"] == 5)
+
 TIER_WEIGHT_KEYS = tuple(t["key"] for t in WEIGHT_TIERS)
-assert len(TIER_WEIGHT_KEYS) == 69, "Tier1-4は合計69種であること（2026-08-25: RP関連3種をBASE_WEIGHTSへ昇格したため60→57。2026-09-02: base_hp_panic_thresholdをBASE_WEIGHTSへ昇格したため57→56。2026-09-04: rush_opening_pressure新設（Tier4）56→57。2026-09-09: AIビルドモード向け新規重み12種新設（opening_tempo_pref/comeback_desperation_pref/tempo_loss_aversion/mirror_match_awareness/first_kill_momentum/signature_unit_affinity×5/flourish_tiebreak_pref/endgame_clock_bluff）57→69。詳細はanalyze_tuning_run_handoff.md 3.20節参照）"
+assert len(TIER_WEIGHT_KEYS) == 75, "Tier1-5は合計75種であること（2026-09-26: Tier5（Sprigling時代の重み）6種新設69→75。2026-08-25: RP関連3種をBASE_WEIGHTSへ昇格したため60→57。2026-09-02: base_hp_panic_thresholdをBASE_WEIGHTSへ昇格したため57→56。2026-09-04: rush_opening_pressure新設（Tier4）56→57。2026-09-09: AIビルドモード向け新規重み12種新設（opening_tempo_pref/comeback_desperation_pref/tempo_loss_aversion/mirror_match_awareness/first_kill_momentum/signature_unit_affinity×5/flourish_tiebreak_pref/endgame_clock_bluff）57→69。詳細はanalyze_tuning_run_handoff.md 3.20節参照）"
 assert len(set(TIER_WEIGHT_KEYS) & set(BASE_WEIGHT_KEYS)) == 0, "初期解放セットとキー名が重複していないこと"
-assert sorted(t["champion_index"] for t in WEIGHT_TIERS) == list(range(1, 70)), \
-    "champion_indexは1〜69が過不足なく1つずつ割り当てられていること（2026-09-04: rush_opening_pressure新設により1〜56→1〜57。2026-09-09: 12種新設により1〜57→1〜69）"
+assert sorted(t["champion_index"] for t in WEIGHT_TIERS) == list(range(1, 76)), \
+    "champion_indexは1〜75が過不足なく1つずつ割り当てられていること（2026-09-26: Tier5の6種新設により1〜69→1〜75。2026-09-04: rush_opening_pressure新設により1〜56→1〜57。2026-09-09: 12種新設により1〜57→1〜69）"
 
 WEIGHT_TIER_BY_KEY = {t["key"]: t for t in WEIGHT_TIERS}
 
@@ -482,8 +503,8 @@ HEURISTIC_WEIGHTS.update(copy.deepcopy(ENGINE_ONLY_WEIGHTS))
 for _t in WEIGHT_TIERS:
     HEURISTIC_WEIGHTS[_t["key"]] = _t["default"]
 
-assert len(HEURISTIC_WEIGHTS) == 27 + 69 + len(ENGINE_ONLY_WEIGHTS), \
-    "HEURISTIC_WEIGHTSは 27(初期) + 69(Tier1-4) + engine_only の合計であること（2026-09-02: base_hp_panic_thresholdをTier4からBASE_WEIGHTSへ昇格したため23+57→24+56に更新。同日試験導入したbase_approach_defense_priorityは実測で悪化が確認されたため撤回済み。2026-09-04: rp_income_margin新設24→25、base_pressure_ramp_rounds新設25→26。あわせてTier4にrush_opening_pressure新設56→57。2026-09-09: advance_ramp_rounds新設26→27、Tier4にAIビルドモード向け新規重み12種新設57→69）"
+assert len(HEURISTIC_WEIGHTS) == 27 + 75 + len(ENGINE_ONLY_WEIGHTS), \
+    "HEURISTIC_WEIGHTSは 27(初期) + 75(Tier1-5) + engine_only の合計であること（2026-09-26: Tier5新設69→75。2026-09-02: base_hp_panic_thresholdをTier4からBASE_WEIGHTSへ昇格したため23+57→24+56に更新。同日試験導入したbase_approach_defense_priorityは実測で悪化が確認されたため撤回済み。2026-09-04: rp_income_margin新設24→25、base_pressure_ramp_rounds新設25→26。あわせてTier4にrush_opening_pressure新設56→57。2026-09-09: advance_ramp_rounds新設26→27、Tier4にAIビルドモード向け新規重み12種新設57→69）"
 
 
 # ============================================================
@@ -526,6 +547,12 @@ def _sync_champion_weights_from_file(path=None):
 
     current_keys = set(HEURISTIC_WEIGHTS)
     champion_keys = set(champion_weights)
+    # Tier5新設前のファイルは、Tier5のキーだけが欠けている場合に限り既定値で補って同期する
+    if champion_keys < current_keys and (current_keys - champion_keys) <= SPRIGLING_TIER_KEYS:
+        champion_weights = dict(champion_weights)
+        for k in current_keys - champion_keys:
+            champion_weights[k] = HEURISTIC_WEIGHTS[k]
+        champion_keys = set(champion_weights)
     if champion_keys != current_keys:
         missing = current_keys - champion_keys
         extra = champion_keys - current_keys
