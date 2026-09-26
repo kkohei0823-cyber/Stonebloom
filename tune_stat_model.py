@@ -10,7 +10,8 @@ Spriglingのステータス式の係数と戦闘ルール（連撃・攻城）�
 ■ 1対1の絶対条件（--model mass のとき。違反したtrialは対局せずに棄却する）
   verify_lab.duel_report（隣接1対1・同時ダメージ・連撃込み・属性相性なし）で
     重量級 vs 軽量級 / 重量級 vs 中量級 : 負け 0%
-    苔兵・棘走・岩守・毒舞 vs 軽量級      : 負け 0%（根張は非戦闘職なので除外）
+    苔兵・棘走・岩守・毒舞 vs 軽量級      : 負け 0%
+    軽量級 vs 根張（非戦闘職）            : 負け 0%
   相打ちは負けに数えない。
 
 ■ 実対局の目標（損失 = Σ(スコア − 目標)²）
@@ -86,7 +87,8 @@ def constraint_violation(overrides, samples):
     """1対1の絶対条件の違反量（負け率の合計）。0なら合格。"""
     V.apply_config_overrides(overrides)
     rep = V.duel_report(samples, "constraint", attribute=False)
-    v = rep["class"]["heavy_vs_light"]["loss"] + rep["class"]["heavy_vs_middle"]["loss"]
+    v = (rep["class"]["heavy_vs_light"]["loss"] + rep["class"]["heavy_vs_middle"]["loss"]
+         + rep["class"]["light_vs_root"]["loss"])
     v += sum(r["loss"] for r in rep["core_vs_light"].values())
     return v, rep
 

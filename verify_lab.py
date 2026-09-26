@@ -172,10 +172,23 @@ def play_game(sc, seed, a_seat):
             "a_seat": a_seat, "produced": produced}
 
 
+def _swap_sides_of_rosters(sc):
+    """ロースターと持ち込み駒だけをA/Bで入れ替えたシナリオ（ボットはそのまま）。"""
+    out = dict(sc)
+    r = sc.get("rosters") or {}
+    out["rosters"] = {"A": r.get("B"), "B": r.get("A")}
+    e = sc.get("start_extra") or {}
+    out["start_extra"] = {"A": e.get("B"), "B": e.get("A")}
+    return out
+
+
 def play_pair(task):
+    """1ペア=2局。1局目はAが先手、2局目はAが後手。
+    シナリオに "swap_rosters": True があれば、2局目はロースター（と持ち込み駒）もA/Bで入れ替える
+    （両者が別々の構成を持つ対局でも、各ボットが両方の構成・両方の手番を1回ずつ担当する）。"""
     sc, seed = task
     g1 = play_game(sc, seed, 0)
-    g2 = play_game(sc, seed, 1)
+    g2 = play_game(_swap_sides_of_rosters(sc) if sc.get("swap_rosters") else sc, seed, 1)
     return {"seed": seed, "pair_score": (g1["score"] + g2["score"]) / 2, "games": [g1, g2]}
 
 
@@ -305,6 +318,10 @@ def duel_report(samples=150, seed="0", attribute=False):
                 loss += r == 0.0
                 draw += r == 0.5
         out["class"][f"{big}_vs_{small}"] = {"loss": round(loss / n, 4), "draw": round(draw / n, 4)}
+    # 根張（非戦闘職）は軽量級に負けるべきでない相手として、逆向き（軽量級側の負け）を数える
+    root = CONFIG["pieces"]["工兵"]
+    lost = sum(duel_detail(b, root, mult(b, root), mult(root, b))[0] == 0.0 for b in cls["light"])
+    out["class"]["light_vs_root"] = {"loss": round(lost / samples, 4), "draw": None}
     for k in DUEL_CORE:
         c = CONFIG["pieces"][k]
         loss = draw = 0
@@ -333,7 +350,8 @@ def cmd_duels(args):
         rep = duel_report(args.samples, args.seed, attribute=attr)
         print(f"== 1対1（{'属性相性あり' if attr else '属性相性なし'}）")
         for k, v in rep["class"].items():
-            print(f"  {k:16s} 負け{v['loss']:.1%} 相打ち{v['draw']:.1%}")
+            draw = "" if v["draw"] is None else f" 相打ち{v['draw']:.1%}"
+            print(f"  {k:16s} 負け{v['loss']:.1%}{draw}")
         for k, v in rep["core_vs_light"].items():
             print(f"  {DISPLAY[k]} vs 軽量級: 負け{v['loss']:.1%} 相打ち{v['draw']:.1%} "
                   f"| 軽量級が連撃する割合{v['light_multi_hit_rate']:.0%} "
@@ -390,23 +408,51 @@ def cmd_calibrate(args):
 # ============================================================
 # compare: AI同士の比較
 # ============================================================
-def _random_roster_scenario(seed, n_spriglings):
-    rng = random.Random(f"roster-{seed}")
+def _random_roster_scenario(seed, n_spriglings, stratified=False, prefix="r"):
+    """ランダムなSpriglingを n 体。stratified=True なら階級を 軽→中→重→軽… の順に
+    （開始位置はランダム）割り当て、構成ごとの階級の偏りを無くす。"""
+    rng = random.Random(f"roster-{seed}-{prefix}")
+    classes = ("light", "middle", "heavy")
+    start = rng.randrange(3)
     spr = {}
     for i in range(n_spriglings):
-        wc = rng.choice(("light", "middle", "heavy"))
+        wc = classes[(start + i) % 3] if stratified else rng.choice(classes)
         roll_seed = rng.randint(0, 10**6)  # 個体差ロール。重量判定も同じロールで行う
-        spr[f"r{i}"] = {"genome": S.random_genome(rng, wc, seed=roll_seed), "seed": roll_seed}
+        spr[f"{prefix}{i}"] = {"genome": S.random_genome(rng, wc, seed=roll_seed), "seed": roll_seed}
     return spr
+
+
+def ai_eval_scenario(seed, bot_a, bot_b, overrides=None, size=3, stratified=False, mode="mirror"):
+    """AI比較用の1ペア分のシナリオ。既存5種はどちらも常に使える。
+      mirror: 両者が同じSpriglingをsize体持ち、同じ1体を最初の手駒に持つ
+      swap  : 両者が別々のSpriglingをsize体ずつ持つ（2局目で構成も入れ替える＝構成の運を相殺）"""
+    base = list(BASE_KINDS)
+    if mode == "mirror":
+        spr = _random_roster_scenario(seed, size, stratified)
+        kinds = [f"S:{n}" for n in spr]
+        return {"config_overrides": overrides, "spriglings": spr,
+                "rosters": {"A": base + kinds, "B": base + kinds},
+                "start_extra": {"A": [kinds[0]], "B": [kinds[0]]},
+                "bots": {"A": bot_a, "B": bot_b}}
+    spr_a = _random_roster_scenario(seed, size, stratified, prefix="a")
+    spr_b = _random_roster_scenario(seed, size, stratified, prefix="b")
+    ka, kb = [f"S:{n}" for n in spr_a], [f"S:{n}" for n in spr_b]
+    return {"config_overrides": overrides, "spriglings": {**spr_a, **spr_b},
+            "rosters": {"A": base + ka, "B": base + kb},
+            "start_extra": {"A": [ka[0]], "B": [kb[0]]},
+            "bots": {"A": bot_a, "B": bot_b}, "swap_rosters": True}
 
 
 def cmd_compare(args):
     tasks = []
     for i in range(args.pairs):
         seed = f"{args.seed}-{i}"
-        sc = {"config_overrides": None, "rosters": {"A": None, "B": None},
-              "bots": {"A": args.a, "B": args.b},
-              "spriglings": _random_roster_scenario(seed, args.roster_size) if args.random_rosters else {}}
+        if args.random_rosters:
+            sc = ai_eval_scenario(seed, args.a, args.b, None, args.roster_size,
+                                  args.stratified, args.roster_mode)
+        else:
+            sc = {"config_overrides": None, "rosters": {"A": None, "B": None},
+                  "bots": {"A": args.a, "B": args.b}, "spriglings": {}}
         tasks.append((sc, seed))
     t0 = time.time()
     pairs = _run_with_sprt(tasks, args)
@@ -744,6 +790,8 @@ def main(argv=None):
     p.add_argument("--random-rosters", action="store_true",
                    help="ペアごとにランダムなSprigling構成を両者共通で追加する")
     p.add_argument("--roster-size", type=int, default=3)
+    p.add_argument("--stratified", action="store_true", help="構成内の階級を軽・中・重で均等に割り当てる")
+    p.add_argument("--roster-mode", choices=("mirror", "swap"), default="mirror")
     p.add_argument("--sprt", help="例 0.5,0.55 （H0,H1の期待スコア）。指定するとbatchごとに早期終了判定")
     p.add_argument("--batch", type=int, default=20)
     p.set_defaults(func=cmd_compare)

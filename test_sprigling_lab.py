@@ -78,13 +78,24 @@ def test_guard_moves_base_damage_to_adjacent_sprigling():
 
 
 def test_default_model_meets_1v1_rules():
-    """既定（mass式）: 重量級は軽量級・中量級に、苔兵・棘走・岩守・毒舞は軽量級に1対1で負けない。"""
+    """既定（mass式）: 重量級は軽量級・中量級に、苔兵・棘走・岩守・毒舞は軽量級に1対1で負けない。
+    軽量級は根張（非戦闘職）に負けない。"""
     import verify_lab as V
     reset_config()
     rep = V.duel_report(80, "test", attribute=False)
     assert rep["class"]["heavy_vs_light"]["loss"] == 0.0
     assert rep["class"]["heavy_vs_middle"]["loss"] == 0.0
+    assert rep["class"]["light_vs_root"]["loss"] == 0.0
     assert all(r["loss"] == 0.0 for r in rep["core_vs_light"].values())
+
+
+def test_swap_roster_mode_swaps_rosters_in_second_game():
+    import verify_lab as V
+    sc = V.ai_eval_scenario("t", "heuristic", "heuristic", None, size=2, stratified=True, mode="swap")
+    swapped = V._swap_sides_of_rosters(sc)
+    assert swapped["rosters"]["A"] == sc["rosters"]["B"]
+    assert swapped["start_extra"]["B"] == sc["start_extra"]["A"]
+    assert sc["rosters"]["A"] != sc["rosters"]["B"]
 
 
 def test_validate_genome_rejects_illegal_builds():

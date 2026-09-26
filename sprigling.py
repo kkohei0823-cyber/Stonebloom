@@ -285,10 +285,14 @@ def _mass_model(genome, seed, raw, weight, produce_cost, move, atk_raw):
     作ってあり、本拠へのダメージは作り（攻撃寄りかどうか）に左右されず体重だけで決まる。"""
     ms = CONFIG["sprigling_stats"]["mass"]
     M = weight / ms["weight_ref"]
+    # 強さ用の実効重量には「基礎の体」(mass_offset)を足す。動員コストの最低料金
+    # (base_fee) = 1.5×66.7 と同じ考え方で、ごく軽いビルドがコストの割に弱くなりすぎるのを防ぐ。
+    off = ms.get("mass_offset", 0.0)
+    M_body = (weight + off) / (ms["weight_ref"] + off)
     # 階級補正: 階級が1つ上がるごとに、攻撃力・HPの計算に使う実効重量を class_step 倍する
     # （階級の境目付近で「わずかに軽い下の階級」に1対1で負けないようにするため）
     cls_index = {"light": 0, "middle": 1, "heavy": 2}[weight_class_of(weight)]
-    M_str = M * (1.0 + ms.get("class_step", 0.0)) ** cls_index
+    M_str = M_body * (1.0 + ms.get("class_step", 0.0)) ** cls_index
     a_ref, d_ref = _shape_refs()
     A = atk_raw / a_ref
     D = raw["durability"] / d_ref
