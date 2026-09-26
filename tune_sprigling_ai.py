@@ -126,9 +126,16 @@ def main(argv=None):
     study.optimize(objective, n_trials=args.trials)
 
     done = [t for t in study.trials if t.value is not None]
-    top = sorted(done, key=lambda t: -t.value)[: args.confirm]
+    # 現在の重みと同一の候補（最初に入れた基準trial等）は再検定しない
+    # （A/A比較なので「改善」になりえず、偶然の偽陽性の元になるだけ）
+    baseline = {k: HEURISTIC_WEIGHTS[k] for k in keys}
+    candidates = [t for t in done
+                  if any(abs(t.params[k] - baseline[k]) > 1e-9 for k in keys)]
+    top = sorted(candidates, key=lambda t: -t.value)[: args.confirm]
+    # 複数候補を検定するので、有意水準をBonferroni補正する（全体で5%）
+    alpha = 0.05 / max(1, len(top))
     print(f"== 上位{len(top)}trialを、選抜に使っていない新しいシードでSPRT再検定 "
-          f"(H0: 0.5 / H1: {args.s1})")
+          f"(H0: 0.5 / H1: {args.s1} / 各α={alpha:.3f})")
     confirmed = []
     for t in top:
         w = {k: t.params[k] for k in keys}
@@ -137,7 +144,7 @@ def main(argv=None):
         verdict = None
         for i in range(0, len(held), 50):
             samples += evaluate(w, held[i:i + 50], overrides, args.workers)
-            verdict, llr = lab_stats.sprt_decision(samples, 0.5, args.s1)
+            verdict, llr = lab_stats.sprt_decision(samples, 0.5, args.s1, alpha=alpha)
             if verdict:
                 break
         summ = lab_stats.summarize(samples)

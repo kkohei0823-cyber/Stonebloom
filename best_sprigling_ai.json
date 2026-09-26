@@ -1,0 +1,128 @@
+{
+ "confirmed": true,
+ "overrides": null,
+ "keys": [
+  "hp_valuation_bonus",
+  "sprigling_affinity",
+  "speed_edge_pref",
+  "heavy_anchor_pref",
+  "swarm_pref",
+  "elite_pref",
+  "efficiency",
+  "attack",
+  "kill_bonus",
+  "production_diversity_pref",
+  "favorable_matchup_bonus",
+  "unfavorable_matchup_penalty"
+ ],
+ "weights": {
+  "hp_valuation_bonus": 0.0,
+  "sprigling_affinity": 0.0,
+  "speed_edge_pref": 0.0,
+  "heavy_anchor_pref": 0.0,
+  "swarm_pref": 0.0,
+  "elite_pref": 0.0,
+  "efficiency": 2.27,
+  "attack": 0.83,
+  "kill_bonus": 24.0,
+  "production_diversity_pref": 9.28,
+  "favorable_matchup_bonus": 0.0,
+  "unfavorable_matchup_penalty": 0.0
+ },
+ "candidates": [
+  {
+   "trial": 19,
+   "selection_score": 0.55,
+   "verdict": "NOT_BETTER",
+   "held_out": {
+    "pairs": 150,
+    "score": 0.47,
+    "ci95": [
+     0.4119,
+     0.5281
+    ],
+    "elo": -20.9
+   },
+   "weights": {
+    "hp_valuation_bonus": 0.5541028751324778,
+    "sprigling_affinity": 1.3961742163688209,
+    "speed_edge_pref": 1.474084420734286,
+    "heavy_anchor_pref": 3.4424194445888685,
+    "swarm_pref": 0.5877221801815974,
+    "elite_pref": 0.9952863001523895,
+    "efficiency": 3.533267545361875,
+    "attack": 0.6157962459215112,
+    "kill_bonus": 17.780026317418084,
+    "production_diversity_pref": 5.865694876817917,
+    "favorable_matchup_bonus": 0.3329034202625716,
+    "unfavorable_matchup_penalty": 0.15642659451758537
+   }
+  },
+  {
+   "trial": 20,
+   "selection_score": 0.5125,
+   "verdict": "NOT_BETTER",
+   "held_out": {
+    "pairs": 100,
+    "score": 0.435,
+    "ci95": [
+     0.3631,
+     0.5069
+    ],
+    "elo": -45.4
+   },
+   "weights": {
+    "hp_valuation_bonus": 0.32115688570580647,
+    "sprigling_affinity": 2.1376391939883645,
+    "speed_edge_pref": 3.0688823021001683,
+    "heavy_anchor_pref": 4.7669997976604215,
+    "swarm_pref": 0.6623472218976947,
+    "elite_pref": 1.1968743000696938,
+    "efficiency": 5.187133546993759,
+    "attack": 0.5527780055721058,
+    "kill_bonus": 29.08671682625596,
+    "production_diversity_pref": 9.017254544251042,
+    "favorable_matchup_bonus": 0.1275400587572461,
+    "unfavorable_matchup_penalty": 3.473715838678548
+   }
+  },
+  {
+   "trial": 0,
+   "selection_score": 0.5,
+   "verdict": "IMPROVED",
+   "held_out": {
+    "pairs": 200,
+    "score": 0.5675,
+    "ci95": [
+     0.518,
+     0.617
+    ],
+    "elo": 47.2
+   },
+   "weights": {
+    "hp_valuation_bonus": 0.0,
+    "sprigling_affinity": 0.0,
+    "speed_edge_pref": 0.0,
+    "heavy_anchor_pref": 0.0,
+    "swarm_pref": 0.0,
+    "elite_pref": 0.0,
+    "efficiency": 2.27,
+    "attack": 0.83,
+    "kill_bonus": 24.0,
+    "production_diversity_pref": 9.28,
+    "favorable_matchup_bonus": 0.0,
+    "unfavorable_matchup_penalty": 0.0
+   }
+  }
+ ],
+ "labels": {
+  "hp_valuation_bonus": "耐久重視度",
+  "sprigling_affinity": "Sprigling重用度",
+  "speed_edge_pref": "速度差活用度",
+  "heavy_anchor_pref": "重量級拠点守備志向",
+  "swarm_pref": "数押し志向",
+  "elite_pref": "精鋭志向",
+  "favorable_matchup_bonus": "有利対面積極度",
+  "unfavorable_matchup_penalty": "不利対面回避度"
+ }
+}

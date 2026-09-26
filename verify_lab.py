@@ -346,7 +346,8 @@ def _run_with_sprt(tasks, args):
     done = []
     for i in range(0, len(tasks), args.batch):
         done += run_pairs(tasks[i:i + args.batch], args.workers)
-        verdict, llr = lab_stats.sprt_decision([p["pair_score"] for p in done], s0, s1)
+        verdict, llr = lab_stats.sprt_decision([p["pair_score"] for p in done], s0, s1,
+                                               alpha=getattr(args, "alpha", 0.05))
         print(f"  {len(done)} pairs: LLR={llr:.2f} verdict={verdict}")
         if verdict:
             break
@@ -490,18 +491,20 @@ def cmd_exploit(args):
         fitness = elite_fit + child_fit
 
     ranked = sorted(zip(fitness, population), key=lambda t: -t[0][0])
+    alpha = 0.05 / max(1, args.confirm)  # 複数候補の検定なのでBonferroni補正（全体で5%）
     print(f"== 上位{args.confirm}候補を、選抜に使っていない新しいシードでSPRT再検定 "
-          f"(H0: score={args.s0} / H1: score={args.s1})")
+          f"(H0: score={args.s0} / H1: score={args.s1} / 各α={alpha:.3f})")
     findings = []
     for rank, ((score, adopt), g) in enumerate(ranked[: args.confirm]):
         st = S.derive_stats(g, 0)
         ref = nearest_reference(st, pool_stats)
         sc = _exploit_scenario(g, ref, pool[ref], args.bot)
         tasks = [(sc, f"confirm{args.seed}-{rank}-{j}") for j in range(args.max_confirm_pairs)]
-        cargs = argparse.Namespace(sprt=f"{args.s0},{args.s1}", batch=args.batch, workers=args.workers)
+        cargs = argparse.Namespace(sprt=f"{args.s0},{args.s1}", batch=args.batch, workers=args.workers,
+                                   alpha=alpha)
         pairs = _run_with_sprt(tasks, cargs)
         samples = [p["pair_score"] for p in pairs]
-        verdict, llr = lab_stats.sprt_decision(samples, args.s0, args.s1)
+        verdict, llr = lab_stats.sprt_decision(samples, args.s0, args.s1, alpha=alpha)
         label = {"H1": "BROKEN", "H0": "OK"}.get(verdict, "INCONCLUSIVE")
         summary = lab_stats.summarize(samples)
         print(f"  #{rank + 1} {label}: {summary} vs 対照{ref}({pool_stats[ref]['produce_cost']}RP) | "
