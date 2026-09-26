@@ -28,16 +28,25 @@ import copy
 # ============================================================
 RP_SCALE = 100
 
+# ============================================================
+# 属性（三すくみ）: Whittlewispの材質（bind/pierce/crush）と共通の語彙
+# 既存の駒は 苔兵(歩兵)=bind / 棘走(騎兵)=pierce / 岩守(重装兵)=crush を持つ。
+# 相性は bind→pierce→crush→bind の順に有利（有利側から不利側へのダメージが×2.0）。
+# これは旧来の 歩兵→騎兵→重装兵→歩兵 と同じ向きなので、既存駒同士の相性は変わらない。
+# 弓兵・工兵・本拠は属性なし(None)＝三すくみに関与しない。
+# ============================================================
+ATTRIBUTES = ("bind", "pierce", "crush")
+
 CONFIG = {
     "board_size": 9,
 
     "pieces": {
-        "歩兵":   {"hp": 200, "atk": 36, "move": 2, "cost": 3 * RP_SCALE, "produce_cost": 4 * RP_SCALE, "upkeep": 0, "ranged": False, "range": 0},
-        "騎兵":   {"hp": 150, "atk": 48, "move": 3, "cost": 3 * RP_SCALE, "produce_cost": 5 * RP_SCALE, "upkeep": 0, "ranged": False, "range": 0},
-        "重装兵": {"hp": 300, "atk": 24, "move": 1, "cost": 4 * RP_SCALE, "produce_cost": 4 * RP_SCALE, "upkeep": 0, "ranged": False, "range": 0},
-        "弓兵":   {"hp": 150, "atk": 36, "move": 2, "cost": 4 * RP_SCALE, "produce_cost": 5 * RP_SCALE, "upkeep": 0, "ranged": True,  "range": 1},
-        "工兵":   {"hp": 100, "atk": 12, "move": 1, "cost": 2 * RP_SCALE, "produce_cost": 3 * RP_SCALE, "upkeep": 0, "ranged": False, "range": 0},
-        "本拠":   {"hp": 600, "atk": 0, "move": 0, "cost": 0, "produce_cost": 0, "upkeep": 0, "ranged": False, "range": 0},
+        "歩兵":   {"hp": 200, "atk": 36, "move": 2, "cost": 3 * RP_SCALE, "produce_cost": 4 * RP_SCALE, "upkeep": 0, "ranged": False, "range": 0, "attribute": "bind"},
+        "騎兵":   {"hp": 150, "atk": 48, "move": 3, "cost": 3 * RP_SCALE, "produce_cost": 5 * RP_SCALE, "upkeep": 0, "ranged": False, "range": 0, "attribute": "pierce"},
+        "重装兵": {"hp": 300, "atk": 24, "move": 1, "cost": 4 * RP_SCALE, "produce_cost": 4 * RP_SCALE, "upkeep": 0, "ranged": False, "range": 0, "attribute": "crush"},
+        "弓兵":   {"hp": 150, "atk": 36, "move": 2, "cost": 4 * RP_SCALE, "produce_cost": 5 * RP_SCALE, "upkeep": 0, "ranged": True,  "range": 1, "attribute": None},
+        "工兵":   {"hp": 100, "atk": 12, "move": 1, "cost": 2 * RP_SCALE, "produce_cost": 3 * RP_SCALE, "upkeep": 0, "ranged": False, "range": 0, "attribute": None},
+        "本拠":   {"hp": 600, "atk": 0, "move": 0, "cost": 0, "produce_cost": 0, "upkeep": 0, "ranged": False, "range": 0, "attribute": None},
     },
 
     "economy": {
@@ -58,18 +67,19 @@ CONFIG = {
         "capture_income_delay": 1,  # 占有してからRP収入が発生するまでのラウンド数
     },
 
-    # 中盤解禁スポット（隅）: start_round以降のみ産出。得たRP分のVPを同時に徴収する
-    # (RP:VP=1:1等価交換)ことで「序盤=RPスポット→中盤=ここの争奪→終盤=VP化」を狙う
-    # 【注意】vp_upkeep_per_incomeは「RP収入1につきVP税1」という換算比率のため、
-    # RP側のincomeが100倍されると、据え置きのVP側から見た負担も自動的に100倍になる。
-    # これは意図的な設計変更ではなく計算上の副作用なので、③タブのVP経済（vp_spots）を
-    # 見直す際にこの点をあわせて検証すること（本チャットのスコープ外）。
+    # 中盤解禁スポット（隅）: start_round以降のみ産出。得たRPに比例したVPを同時に徴収する
+    # ことで「序盤=RPスポット→中盤=ここの争奪→終盤=VP化」を狙う。
+    # RP100倍化の副作用（旧「RP1につきVP1」のままだとVP負担まで100倍になる）への対応として、
+    # 換算比率を「実際に得たRP rp_per_vp_upkeep(=100)につきVP1」に変更した
+    # （例: 200RP獲得→VP-2。旧スケールの「RP2→VP-2」と同じ負担）。
+    # RP上限に当たって100未満の端数しか得られなかった分は、プレイヤーごとに繰り越して
+    # 累計100に達した時点でVP1を徴収する（VPは常に整数、長期的な負担は厳密に1/100）。
     "midgame_spots": {
         "points": [(1, 1), (1, 7), (7, 1), (7, 7)],
         "start_round": 10,
         "income": 2 * RP_SCALE,
         "capture_income_delay": 1,
-        "vp_upkeep_per_income": 1.0,
+        "rp_per_vp_upkeep": 1 * RP_SCALE,
     },
 
     # VP（勝利条件）: 3-3点(三々)と天元。RPは生まない
@@ -82,9 +92,10 @@ CONFIG = {
         "kill_bonus_vp": 30,  # VP地点駐留中の駒を撃破されると相手にこのVPが入る
     },
 
-    # 駒種相性（三すくみ）: 歩兵→騎兵→重装兵→歩兵の順に有利（×2.0）。弓兵・工兵は関与なし
+    # 属性相性（三すくみ）: 駒の"attribute"で判定する。bind→pierce→crush→bindの順に有利（×2.0）。
+    # 既存駒では 苔兵(歩兵)→棘走(騎兵)→岩守(重装兵)→苔兵。属性なし(None)の駒は関与しない。
     "type_advantage": {
-        "pairs": {"歩兵": "騎兵", "騎兵": "重装兵", "重装兵": "歩兵"},
+        "pairs": {"bind": "pierce", "pierce": "crush", "crush": "bind"},
         "multiplier": 2.0,
     },
 
@@ -105,7 +116,33 @@ CONFIG = {
     "production_enabled": True,  # RPで新規駒を手持ちに追加できる（ターン消費なし）
     "max_rounds_safety": 200,  # 無限ループ防止の安全装置
     "max_owned_pieces": 9,  # reserve+盤上駒の合計上限（本拠は除く）。企画書2.2節
+
+    # Whittlewisp重量 → 動員コスト(RP)の換算（weight_to_rp_cost()参照）
+    #   cost = base_fee + (cost_at_heavy_limit - base_fee) * weight / heavy_weight_limit
+    # 重量級上限(600)でちょうど1000RP(=rp_cap)。base_feeは「どんなに軽い駒でも最低限かかる
+    # 動員費」で、1ラウンド分の基礎収入(100)に揃えてある。base_fee=0にすれば純粋な比例式になる。
+    "sprigling_cost": {
+        "heavy_weight_limit": 600,          # Whittlewisp config.WEIGHT_CLASS_LIMITS["heavy"]
+        "cost_at_heavy_limit": 10 * RP_SCALE,
+        "base_fee": 1 * RP_SCALE,
+    },
 }
+
+
+def weight_to_rp_cost(weight):
+    """Whittlewispのビルド重量(Creature.build_weight)を動員コスト(RP, 整数)に換算する。
+
+    base_fee + (cost_at_heavy_limit - base_fee) * weight / heavy_weight_limit を
+    四捨五入して整数RPにする。既定値では
+      light上限140 → 310RP / middle上限310 → 565RP / heavy上限600 → 1000RP。
+    重量級上限を超えるビルドは動員できないためValueErrorにする。"""
+    sc = CONFIG["sprigling_cost"]
+    limit = sc["heavy_weight_limit"]
+    if weight < 0 or weight > limit + 1e-9:
+        raise ValueError(f"weight {weight} is outside 0..{limit} (heavy class limit)")
+    base = sc["base_fee"]
+    raw = base + (sc["cost_at_heavy_limit"] - base) * weight / limit
+    return int(raw + 0.5 + 1e-9)
 
 
 # ============================================================

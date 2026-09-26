@@ -109,12 +109,24 @@ class Board:
         return targets
 
 
+def attribute_of(kind):
+    """駒種の属性（"bind"/"pierce"/"crush"、属性なしはNone）を返す。"""
+    return CONFIG["pieces"][kind].get("attribute")
+
+
 def type_multiplier(attacker_kind, defender_kind):
-    """駒種相性（三すくみ）によるダメージ倍率（検証ハンドブック6章）。
-    歩兵→騎兵、騎兵→重装兵、重装兵→歩兵の組み合わせのみ CONFIG["type_advantage"]["multiplier"]
-    （既定2.0）を返す。それ以外（弓兵・工兵が絡む場合や不利/無関係な組み合わせ）は1.0。"""
+    """属性相性（三すくみ）によるダメージ倍率（検証ハンドブック6章）。
+    攻撃側・防御側の駒種が持つ属性（CONFIG["pieces"][kind]["attribute"]）で判定し、
+    bind→pierce、pierce→crush、crush→bindの組み合わせのみ
+    CONFIG["type_advantage"]["multiplier"]（既定2.0）を返す。既存駒では
+    苔兵(歩兵,bind)→棘走(騎兵,pierce)→岩守(重装兵,crush)→苔兵。
+    どちらかが属性なし（弓兵・工兵・本拠）や不利/同属性の組み合わせは1.0。"""
+    atk_attr = attribute_of(attacker_kind)
+    def_attr = attribute_of(defender_kind)
+    if atk_attr is None or def_attr is None:
+        return 1.0
     ta = CONFIG["type_advantage"]
-    if ta["pairs"].get(attacker_kind) == defender_kind:
+    if ta["pairs"].get(atk_attr) == def_attr:
         return ta["multiplier"]
     return 1.0
 
@@ -190,6 +202,8 @@ class Economy:
         self.cumulative_vp = [cfg["initial_vp"], cfg["initial_vp"]]  # 勝利条件はこちら（RP収入とは無関係）
         self.spot_owner = {}          # rp_spots・midgame_spots共通の占有遅延判定用
         self.spot_owned_since = {}
+        # midgame_spotsのVP税の端数繰り越し（RP単位、rp_per_vp_upkeep未満）
+        self.vp_tax_carry = [0, 0]
 
     def compute_income(self, board, round_number, engineer_positions):
         """RP経済。rp_spots(4-4点)とmidgame_spots(隅、2026-08-07新設)が対象。
@@ -226,21 +240,24 @@ class Economy:
         income_total = [0, 0]
         wasted_total = [0, 0]
 
-        def add_income(owner, amount, vp_tax_per_unit):
-            """RP上限の残り枠ぶんだけ整数量を加算し、実際に加算できた量にのみ
-            vp_tax_per_unit倍のVP税を課す。amountがrp_capの残り枠を超える分は
+        def add_income(owner, amount, rp_per_vp):
+            """RP上限の残り枠ぶんだけ整数量を加算し、実際に加算できた量rp_per_vpにつき
+            VP1の税を課す（rp_per_vp=Noneなら非課税）。amountがrp_capの残り枠を超える分は
             RPも増えずVP税も発生しない（「RPの増加=VPの減少」を1RP単位で厳密に対応）。
+            rp_per_vpに満たない端数はvp_tax_carryに繰り越すため、VPは常に整数のまま。
             超過して切り捨てられた量はwasted_totalに積算する（2026-08-15追加）。"""
             room = max(cap - running_rp[owner], 0)
             gained = min(amount, room)
             running_rp[owner] += gained
             income_total[owner] += gained
             wasted_total[owner] += (amount - gained)
-            if vp_tax_per_unit:
-                self.cumulative_vp[owner] -= gained * vp_tax_per_unit
+            if rp_per_vp:
+                taxable = self.vp_tax_carry[owner] + gained
+                self.cumulative_vp[owner] -= taxable // rp_per_vp
+                self.vp_tax_carry[owner] = taxable % rp_per_vp
 
-        add_income(0, cfg["base_income"], 0)
-        add_income(1, cfg["base_income"], 0)
+        add_income(0, cfg["base_income"], None)
+        add_income(1, cfg["base_income"], None)
         self._accrue_spot_income(board, round_number, engineer_positions,
                                   CONFIG["rp_spots"], add_income, tax_vp=False)
         self._accrue_spot_income(board, round_number, engineer_positions,
@@ -252,7 +269,7 @@ class Economy:
     def _accrue_spot_income(self, board, round_number, engineer_positions,
                              spot_cfg, add_income, tax_vp):
         """rp_spots・midgame_spots共通の収入計算(2026-08-07新設)。
-        スポット1つごとに add_income(owner, amount, vp_tax_per_unit) を呼び出す
+        スポット1つごとに add_income(owner, amount, rp_per_vp) を呼び出す
         （2026-08-08(2)修正。理由はcompute_incomeのコメント参照）。
         spot_cfgに"start_round"が無ければ常時解禁扱い（既存のrp_spotsはこれに該当し、
         挙動は変更前と同じ）。
@@ -270,7 +287,7 @@ class Economy:
         cfg = CONFIG["economy"]
         start_round = spot_cfg.get("start_round", 0)
         active = round_number >= start_round
-        vp_tax_per_unit = spot_cfg.get("vp_upkeep_per_income", 1.0) if tax_vp else 0
+        rp_per_vp = spot_cfg["rp_per_vp_upkeep"] if tax_vp else None
 
         for pos in spot_cfg["points"]:
             piece = board.grid.get(pos)
@@ -286,7 +303,7 @@ class Economy:
             base = spot_cfg["income"]
             if piece.kind == "工兵":
                 base += cfg["engineer_bonus"]
-            add_income(owner, base, vp_tax_per_unit)
+            add_income(owner, base, rp_per_vp)
 
     def compute_vp(self, board, round_number):
         """勝利条件(VP)。3-3点(星)と天元が対象。4ラウンド目から加算開始。"""

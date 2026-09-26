@@ -61,6 +61,7 @@ def clone_game(game):
     new.econ.cumulative_vp = list(game.econ.cumulative_vp)
     new.econ.spot_owner = dict(game.econ.spot_owner)
     new.econ.spot_owned_since = dict(game.econ.spot_owned_since)
+    new.econ.vp_tax_carry = list(game.econ.vp_tax_carry)
 
     new.reserve = {0: list(game.reserve[0]), 1: list(game.reserve[1])}
     new.engineer_positions = set(game.engineer_positions)
