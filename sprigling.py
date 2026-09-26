@@ -221,6 +221,9 @@ def derive_stats(genome, seed=0):
     atk_raw = (powers[0] if powers else 0.0) + st["atk_secondary_share"] * sum(powers[1:])
     speed = CONFIG["combat"]["base_speed"]
 
+    if st["model"] == "mass":
+        return _mass_model(genome, seed, raw, weight, produce_cost, move, atk_raw)
+
     if st["model"] == "physical":
         ph = st["physical"]
         wr = weight / ph["weight_ref"]
@@ -246,6 +249,56 @@ def derive_stats(genome, seed=0):
     hp = max(1, int(math.sqrt(power / ratio) + 0.5))
     atk = max(1, int(math.sqrt(power * ratio) + 0.5))
     return _finish(genome, seed, raw, weight, produce_cost, hp, atk, move, speed, round(shape, 3))
+
+
+_SHAPE_REF = {}
+
+
+def _shape_refs():
+    """R/H/Wの攻撃の生値・耐久の生値の平均（配分σの正規化用。R/H/Wの平均的な配分がσ=0.5）。"""
+    if not _SHAPE_REF:
+        st = CONFIG["sprigling_stats"]
+        atks, durs = [], []
+        for g in REFERENCE_BUILDS.values():
+            r = raw_stats(g, 0)
+            p = r["part_powers"]
+            atks.append((p[0] if p else 0.0) + st["atk_secondary_share"] * sum(p[1:]))
+            durs.append(r["durability"])
+        _SHAPE_REF["atk"] = sum(atks) / len(atks)
+        _SHAPE_REF["dur"] = sum(durs) / len(durs)
+    return _SHAPE_REF["atk"], _SHAPE_REF["dur"]
+
+
+def _mass_model(genome, seed, raw, weight, produce_cost, move, atk_raw):
+    """mass式: 体の質量が総合的な強さを決め、部位の作りが「攻撃と耐久への配分」を決める。
+      M = 重量/weight_ref
+      σ = 攻撃への配分 = A/(A+D)  （A=攻撃の生値/R/H/W平均, D=耐久の生値/R/H/W平均。
+                                   R/H/Wの平均的な作りでσ=0.5。sigma_min〜sigma_maxにクランプ）
+      r = σ/(1-σ)（攻撃:耐久の比。平均的な作りで1）
+      攻撃力 = atk0 × M^atk_mass_exp × r^atk_shape_exp
+      HP     = hp0  × M^hp_mass_exp  × r^(-hp_shape_exp)
+      素早さ = base_speed × M^(-speed_mass_exp) × (1 + leg_speed_coef×脚の平均length)
+      攻城   = r^(-atk_shape_exp) × M^siege_mass_exp（combat.siege有効時のみ効く）
+    atk_shape_exp = hp_shape_exp なら 攻撃力×HP は重量だけで決まり（攻撃に振った分だけ
+    耐久がそのまま割られる）、1対1の勝敗は作りではなく重量で決まる。
+    攻城倍率は「本拠へのダメージ = atk0 × M^(atk_mass_exp+siege_mass_exp)」となるように
+    作ってあり、本拠へのダメージは作り（攻撃寄りかどうか）に左右されず体重だけで決まる。"""
+    ms = CONFIG["sprigling_stats"]["mass"]
+    M = weight / ms["weight_ref"]
+    a_ref, d_ref = _shape_refs()
+    A = atk_raw / a_ref
+    D = raw["durability"] / d_ref
+    sigma = A / (A + D) if (A + D) > 0 else 0.5
+    sigma = max(ms["sigma_min"], min(ms["sigma_max"], sigma))
+    r = sigma / (1 - sigma)
+    atk = max(1, int(ms["atk0"] * M ** ms["atk_mass_exp"] * r ** ms["atk_shape_exp"] + 0.5))
+    hp = max(1, int(ms["hp0"] * M ** ms["hp_mass_exp"] * r ** (-ms["hp_shape_exp"]) + 0.5))
+    leg = raw["leg_len"] if raw["leg_count"] else -2.0
+    speed = round(CONFIG["combat"]["base_speed"] * M ** (-ms["speed_mass_exp"])
+                  * max(0.25, 1.0 + ms["leg_speed_coef"] * leg), 1)
+    out = _finish(genome, seed, raw, weight, produce_cost, hp, atk, move, speed, round(sigma, 3))
+    out["siege"] = round(r ** (-ms["atk_shape_exp"]) * M ** ms["siege_mass_exp"], 3)
+    return out
 
 
 def _finish(genome, seed, raw, weight, produce_cost, hp, atk, move, speed, shape):

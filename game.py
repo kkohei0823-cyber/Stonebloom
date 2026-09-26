@@ -126,22 +126,47 @@ def piece_speed(kind):
     return CONFIG["pieces"][kind].get("speed", CONFIG["combat"]["base_speed"])
 
 
-def hit_count(attacker_kind, defender_kind):
-    """multi_attack有効時の攻撃回数。素早さの比がthresholds[i]以上なら i+2 回。"""
+def hits_from_speeds(attacker_speed, defender_speed):
+    """素早さの比から攻撃回数を決める（multi_attack無効なら常に1）。
+    比がthresholds[i]以上なら i+2 回、ただし max_hits が上限。"""
     cb = CONFIG["combat"]
     if not cb["multi_attack"]:
         return 1
-    ratio = piece_speed(attacker_kind) / max(piece_speed(defender_kind), 1e-9)
+    ratio = attacker_speed / max(defender_speed, 1e-9)
     n = 1
     for i, th in enumerate(cb["multi_attack_thresholds"]):
         if ratio >= th:
             n = i + 2
-    return n
+    return min(n, cb["max_hits"])
+
+
+def hit_damage_factor(n_hits):
+    """n回攻撃のダメージ倍率。2回目以降は1回あたり extra_hit_efficiency 倍の威力
+    （1.0ならn倍、0.5なら1+0.5(n-1)倍）。"""
+    return 1.0 + CONFIG["combat"]["extra_hit_efficiency"] * (n_hits - 1)
+
+
+def hit_count(attacker_kind, defender_kind):
+    """multi_attack有効時の攻撃回数。本拠は戦闘員ではないので、multi_attack_vs_base=Falseなら
+    本拠への攻撃は常に1回。"""
+    if defender_kind == "本拠" and not CONFIG["combat"]["multi_attack_vs_base"]:
+        return 1
+    return hits_from_speeds(piece_speed(attacker_kind), piece_speed(defender_kind))
+
+
+def siege_multiplier(attacker_kind, defender_kind):
+    """本拠へのダメージに掛ける攻城倍率（combat.siege有効時のみ）。既存駒は1.0。
+    Spriglingは重量で決まる（sprigling.py: 重いほど本拠を崩しやすい）。"""
+    if defender_kind != "本拠" or not CONFIG["combat"]["siege"]:
+        return 1.0
+    return CONFIG["pieces"][attacker_kind].get("siege", 1.0)
 
 
 def damage_multiplier(attacker_kind, defender_kind):
-    """分割後のダメージに掛ける倍率＝属性相性×攻撃回数。"""
-    return type_multiplier(attacker_kind, defender_kind) * hit_count(attacker_kind, defender_kind)
+    """分割後のダメージに掛ける倍率＝属性相性×連撃×攻城。"""
+    return (type_multiplier(attacker_kind, defender_kind)
+            * hit_damage_factor(hit_count(attacker_kind, defender_kind))
+            * siege_multiplier(attacker_kind, defender_kind))
 
 
 def type_multiplier(attacker_kind, defender_kind):

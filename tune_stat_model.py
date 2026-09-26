@@ -2,86 +2,52 @@
 """
 tune_stat_model.py
 ==========================================================
-Spriglingの「physical」ステータス式（部位の式×重量、sprigling.py参照）の係数と
-素早さルール（先制・連撃）をOptunaで探索し、階級バランスの目標に最も近い組み合わせを探す。
+Spriglingのステータス式の係数と戦闘ルール（連撃・攻城）をOptunaで探索する。
 
-「コストで帳尻を合わせる」のではなく、見た目（部位・重量）から決まる式の係数だけを動かして、
-結果として階級間のバランスが取れる点を探す、という位置づけ。係数は少数で、全て意味を持つ:
-  atk_scale / hp_scale           : 全体の強さの水準
-  atk_weight_exp / hp_weight_exp : 重いほど攻撃力・HPが伸びる度合い
-  speed_weight_exp / leg_speed_coef : 軽いほど・脚が長いほど速い度合い
-  initiative / multi_attack      : 素早さの効き方（戦闘ルール）
+  --model physical : 部位の式×重量（旧既定）
+  --model mass     : 体の質量が総合力、部位の作りが攻撃/耐久の配分を決める（sprigling._mass_model）
 
-1 trial = verify_lab の classes を vs-base と bring の両モードで --pairs ペアずつ。
-損失 = Σ(スコア − 目標)²。目標の既定値:
-  vs-base（Sprigling込み vs 既存5種のみ）: 軽量0.45 / 中量0.55 / 重量0.55
-  bring（両者1体持ち込み・階級総当たり）   : 全て0.50（どの階級を持ち込んでも互角）
+■ 1対1の絶対条件（--model mass のとき。違反したtrialは対局せずに棄却する）
+  verify_lab.duel_report（隣接1対1・同時ダメージ・連撃込み・属性相性なし）で
+    重量級 vs 軽量級 / 重量級 vs 中量級 : 負け 0%
+    苔兵・棘走・岩守・毒舞 vs 軽量級      : 負け 0%（根張は非戦闘職なので除外）
+  相打ちは負けに数えない。
+
+■ 実対局の目標（損失 = Σ(スコア − 目標)²）
+  vs-base（Sprigling込み vs 既存5種のみ）   : 軽0.45 / 中0.55 / 重0.55
+  bring（両者1体持ち込み・階級総当たり）     : 軽vs中0.45 / 中vs重0.45 / 軽vs重0.40
+                                              （重いほうが少し有利。行き過ぎない）
+  shape（--model mass のみ）: 同じ重量で攻撃寄り vs 耐久寄り（強制動員）が 0.50
 ビルドはシードから決まり全trial共通（共通乱数法）。最後に最良trialを新しいシードで再計測する。
 
 例:
-  python3 tune_stat_model.py --trials 40 --pairs 60
-  python3 tune_stat_model.py --trials 30 --fix-combat '{"initiative":true,"multi_attack":true}'
+  python3 tune_stat_model.py --model mass --trials 60 --pairs 60 --storage sqlite:///runs/mass.db
 """
 
 import argparse
-import copy
 import json
 import os
 import sys
 
 import verify_lab as V
 
-DEFAULT_TARGETS = {
-    "vs-base": {"light": 0.45, "middle": 0.55, "heavy": 0.55},
-    "bring": {"light_vs_middle": 0.5, "middle_vs_heavy": 0.5, "light_vs_heavy": 0.5},
+TARGETS = {
+    "physical": {
+        "vs-base": {"light": 0.45, "middle": 0.55, "heavy": 0.55},
+        "bring": {"light_vs_middle": 0.5, "middle_vs_heavy": 0.5, "light_vs_heavy": 0.5},
+    },
+    "mass": {
+        "vs-base": {"light": 0.45, "middle": 0.55, "heavy": 0.55},
+        "bring": {"light_vs_middle": 0.45, "middle_vs_heavy": 0.45, "light_vs_heavy": 0.40},
+        "shape": {"forced": 0.5},
+    },
 }
 
 
-def overrides_for(params, fix_combat):
-    ph = {k: params[k] for k in ("atk_scale", "hp_scale", "atk_weight_exp", "hp_weight_exp",
-                                  "speed_weight_exp", "leg_speed_coef")}
-    combat = dict(fix_combat) if fix_combat is not None else {
-        "initiative": params["initiative"], "multi_attack": params["multi_attack"]}
-    return {"sprigling_stats": {"model": "physical", "physical": ph}, "combat": combat}
-
-
-def measure(overrides, pairs, seed, workers):
-    return {mode: V.run_classes(mode, pairs, overrides, "heuristic", workers, seed)
-            for mode in ("vs-base", "bring")}
-
-
-def loss(result, targets):
-    total = 0.0
-    for mode, rows in targets.items():
-        for label, target in rows.items():
-            total += (result[mode][label]["score"] - target) ** 2
-    return total
-
-
-def show(result):
-    return " | ".join(f"{l}={r['score']:.2f}" for m in ("vs-base", "bring") for l, r in result[m].items())
-
-
-def main(argv=None):
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--trials", type=int, default=40)
-    ap.add_argument("--pairs", type=int, default=60)
-    ap.add_argument("--confirm-pairs", type=int, default=200)
-    ap.add_argument("--fix-combat", help='戦闘ルールを固定する(JSON) 例 {"initiative":true,"multi_attack":false}')
-    ap.add_argument("--targets", help="目標値(JSON)。DEFAULT_TARGETSと同じ形")
-    ap.add_argument("--workers", type=int, default=max(1, os.cpu_count() or 1))
-    ap.add_argument("--seed", default="0")
-    ap.add_argument("--storage")
-    ap.add_argument("--study-name", default="sprigling_stat_model")
-    ap.add_argument("--out", default="best_stat_model.json")
-    args = ap.parse_args(argv)
-
-    import optuna
-    targets = json.loads(args.targets) if args.targets else DEFAULT_TARGETS
-    fix_combat = json.loads(args.fix_combat) if args.fix_combat else None
-
-    def objective(trial):
-        p = {
+def suggest(trial, model):
+    """(overrides, params) を返す。"""
+    if model == "physical":
+        ph = {
             "atk_scale": trial.suggest_float("atk_scale", 0.5, 4.0, log=True),
             "hp_scale": trial.suggest_float("hp_scale", 0.4, 3.0, log=True),
             "atk_weight_exp": trial.suggest_float("atk_weight_exp", 0.0, 2.0),
@@ -89,44 +55,116 @@ def main(argv=None):
             "speed_weight_exp": trial.suggest_float("speed_weight_exp", 0.0, 2.0),
             "leg_speed_coef": trial.suggest_float("leg_speed_coef", 0.0, 0.3),
         }
-        if fix_combat is None:
-            p["initiative"] = trial.suggest_categorical("initiative", [False, True])
-            p["multi_attack"] = trial.suggest_categorical("multi_attack", [False, True])
-        res = measure(overrides_for(p, fix_combat), args.pairs, f"stat{args.seed}", args.workers)
-        trial.set_user_attr("result", {m: {l: r["score"] for l, r in rows.items()} for m, rows in res.items()})
+        combat = {"initiative": trial.suggest_categorical("initiative", [False, True]),
+                  "multi_attack": trial.suggest_categorical("multi_attack", [False, True])}
+        return {"sprigling_stats": {"model": "physical", "physical": ph}, "combat": combat}
+    half = trial.suggest_float("sigma_half_range", 0.1, 0.3)
+    ms = {
+        "atk0": trial.suggest_float("atk0", 24.0, 48.0),
+        "hp0": trial.suggest_float("hp0", 140.0, 280.0),
+        "atk_mass_exp": trial.suggest_float("atk_mass_exp", 0.2, 1.2),
+        "hp_mass_exp": trial.suggest_float("hp_mass_exp", 0.2, 1.2),
+        "atk_shape_exp": trial.suggest_float("atk_shape_exp", 0.3, 0.8),
+        "hp_shape_exp": trial.suggest_float("hp_shape_exp", 0.3, 1.2),
+        "sigma_min": 0.5 - half, "sigma_max": 0.5 + half,
+        "speed_mass_exp": trial.suggest_float("speed_mass_exp", 0.0, 1.5),
+        "leg_speed_coef": trial.suggest_float("leg_speed_coef", 0.0, 0.3),
+        "siege_mass_exp": trial.suggest_float("siege_mass_exp", 0.0, 1.0),
+    }
+    multi = trial.suggest_categorical("multi_attack", [False, True])
+    combat = {"multi_attack": multi, "initiative": False,
+              "siege": trial.suggest_categorical("siege", [False, True])}
+    if multi:
+        combat["max_hits"] = trial.suggest_int("max_hits", 2, 4)
+        combat["extra_hit_efficiency"] = trial.suggest_float("extra_hit_efficiency", 0.2, 1.0)
+    return {"sprigling_stats": {"model": "mass", "mass": ms}, "combat": combat}
+
+
+def constraint_violation(overrides, samples):
+    """1対1の絶対条件の違反量（負け率の合計）。0なら合格。"""
+    V.apply_config_overrides(overrides)
+    rep = V.duel_report(samples, "constraint", attribute=False)
+    v = rep["class"]["heavy_vs_light"]["loss"] + rep["class"]["heavy_vs_middle"]["loss"]
+    v += sum(r["loss"] for r in rep["core_vs_light"].values())
+    return v, rep
+
+
+def measure(overrides, pairs, seed, workers, model):
+    res = {mode: {l: r["score"] for l, r in
+                  V.run_classes(mode, pairs, overrides, "heuristic", workers, seed).items()}
+           for mode in ("vs-base", "bring")}
+    if model == "mass":
+        res["shape"] = {"forced": V.run_shape_forced(overrides, pairs, workers, seed)["score"]}
+    return res
+
+
+def loss(result, targets):
+    return sum((result[m][l] - t) ** 2 for m, rows in targets.items() for l, t in rows.items())
+
+
+def show(result):
+    return " | ".join(f"{l}={v:.2f}" for rows in result.values() for l, v in rows.items())
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--model", choices=("physical", "mass"), default="mass")
+    ap.add_argument("--trials", type=int, default=60)
+    ap.add_argument("--pairs", type=int, default=60)
+    ap.add_argument("--confirm-pairs", type=int, default=200)
+    ap.add_argument("--duel-samples", type=int, default=120, help="1対1条件の判定に使う各階級のビルド数")
+    ap.add_argument("--workers", type=int, default=max(1, os.cpu_count() or 1))
+    ap.add_argument("--seed", default="0")
+    ap.add_argument("--storage")
+    ap.add_argument("--study-name")
+    ap.add_argument("--out", default="best_stat_model.json")
+    args = ap.parse_args(argv)
+
+    import optuna
+    targets = TARGETS[args.model]
+    check = args.model == "mass"
+
+    def objective(trial):
+        ov = suggest(trial, args.model)
+        if check:
+            viol, _ = constraint_violation(ov, args.duel_samples)
+            trial.set_user_attr("violation", viol)
+            if viol > 0:
+                print(f"trial {trial.number}: 1対1条件違反 {viol:.3%} → 棄却", flush=True)
+                return 10.0 + viol
+        res = measure(ov, args.pairs, f"stat{args.seed}", args.workers, args.model)
+        trial.set_user_attr("result", res)
         value = loss(res, targets)
         print(f"trial {trial.number}: loss={value:.4f} {show(res)}", flush=True)
         return value
 
-    study = optuna.create_study(direction="minimize", study_name=args.study_name,
+    study = optuna.create_study(direction="minimize",
+                                study_name=args.study_name or f"sprigling_stat_{args.model}",
                                 storage=args.storage, load_if_exists=bool(args.storage),
                                 sampler=optuna.samplers.TPESampler(seed=0))
-    # 現行の既定係数を基準点として最初に評価する
-    from config import CONFIG
-    base = dict(CONFIG["sprigling_stats"]["physical"])
-    base.pop("weight_ref", None)
-    if fix_combat is None:
-        base.update(initiative=False, multi_attack=False)
-    study.enqueue_trial(base)
     study.optimize(objective, n_trials=args.trials)
 
     best = study.best_trial
-    p = dict(best.params)
-    ov = overrides_for(p, fix_combat)
+    if best.value >= 10.0:
+        raise SystemExit("1対1条件を満たすtrialが無かった。--trialsを増やすか探索範囲を見直すこと。")
+    ov = suggest(optuna.trial.FixedTrial(best.params), args.model)
     print("== 最良trialを新しいシードで再計測")
-    held = measure(ov, args.confirm_pairs, f"held{args.seed}", args.workers)
+    held = measure(ov, args.confirm_pairs, f"held{args.seed}", args.workers, args.model)
     held_loss = loss(held, targets)
+    out = {"model": args.model, "params": best.params, "overrides": ov, "targets": targets,
+           "selection_loss": best.value, "held_out_loss": held_loss, "held_out": held}
+    if check:
+        viol, rep = constraint_violation(ov, 300)  # 大きめのサンプルで1対1条件を再確認
+        out["duel_check"] = {"violation": viol, "report": rep}
+        print(f"  1対1条件（各階級300体）: 違反 {viol:.3%}")
     print(f"  選抜時 loss={best.value:.4f} → 再計測 loss={held_loss:.4f}  {show(held)}")
-    out = {"params": p, "overrides": ov, "targets": targets,
-           "selection_loss": best.value, "held_out_loss": held_loss,
-           "held_out": {m: {l: {k: r[k] for k in ("score", "ci95", "adoption")} for l, r in rows.items()}
-                        for m, rows in held.items()}}
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=1)
     print(f"→ {args.out}")
     print("record:", V.save_record("tune-stat-model", args, {
         "trials": [{"number": t.number, "value": t.value, "params": t.params,
-                    "result": t.user_attrs.get("result")} for t in study.trials if t.value is not None],
+                    "result": t.user_attrs.get("result"), "violation": t.user_attrs.get("violation")}
+                   for t in study.trials if t.value is not None],
         "best": out}))
 
 

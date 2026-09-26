@@ -17,6 +17,7 @@ Sprigling（ステータスが固定でない駒）時代の検証環境。3つ�
 サブコマンド:
   calibrate        Spriglingのステータス式の静的チェック（階級ごとの強さ、既存駒との1対1）
   compare          AI同士の比較。--random-rosters でペアごとに違うSprigling構成を両者に配る
+  duels            1対1の条件チェック（重量級は軽/中に負けない、既存駒は軽量級に負けない）
   classes          重量階級ごとのバランス（vs-base: 既存5種のみの相手と / bring: 階級総当たり）
   exploit          壊れたビルドの自動探索
   placement-sweep  配置コスト比率ごとの、Spriglingの採用率と勝率
@@ -236,23 +237,18 @@ def nearest_reference(stats, pool_stats):
 # calibrate: ステータス式の静的チェック
 # ============================================================
 def _hits(a, b):
-    cb = CONFIG["combat"]
-    if not cb["multi_attack"]:
-        return 1
-    base = cb["base_speed"]
-    ratio = a.get("speed", base) / max(b.get("speed", base), 1e-9)
-    n = 1
-    for i, th in enumerate(cb["multi_attack_thresholds"]):
-        if ratio >= th:
-            n = i + 2
-    return n
+    """1対1の計算用: ステータス辞書どうしの攻撃回数（game.hits_from_speedsと同じ規則）。"""
+    from game import hits_from_speeds
+    base = CONFIG["combat"]["base_speed"]
+    return hits_from_speeds(a.get("speed", base), b.get("speed", base))
 
 
 def duel(a, b, mult_ab=1.0, mult_ba=1.0):
     """隣接1対1の殴り合い（同時ダメージ。連撃ルールが有効なら素早さ比の回数を掛ける）。
     aの勝ち=1, 引き分け=0.5, 負け=0。"""
-    mult_ab *= _hits(a, b)
-    mult_ba *= _hits(b, a)
+    from game import hit_damage_factor
+    mult_ab *= hit_damage_factor(_hits(a, b))
+    mult_ba *= hit_damage_factor(_hits(b, a))
     ha, hb = a["hp"], b["hp"]
     for _ in range(10000):
         ha, hb = ha - b["atk"] * mult_ba, hb - a["atk"] * mult_ab
@@ -263,6 +259,88 @@ def duel(a, b, mult_ab=1.0, mult_ba=1.0):
     if hb > 0 >= ha:
         return 0.0
     return 0.5
+
+
+def duel_detail(a, b, mult_ab=1.0, mult_ba=1.0):
+    """duel()の詳細版: (aの結果1/0.5/0, 決着ラウンド数, aの攻撃回数, bの攻撃回数)。"""
+    from game import hit_damage_factor
+    ha_n, hb_n = _hits(a, b), _hits(b, a)
+    fa, fb = hit_damage_factor(ha_n), hit_damage_factor(hb_n)
+    ha, hb = a["hp"], b["hp"]
+    rounds = 0
+    while ha > 0 and hb > 0 and rounds < 10000:
+        rounds += 1
+        ha, hb = ha - b["atk"] * mult_ba * fb, hb - a["atk"] * mult_ab * fa
+    res = 1.0 if (ha > 0 >= hb) else 0.0 if (hb > 0 >= ha) else 0.5
+    return res, rounds, ha_n, hb_n
+
+
+DUEL_CORE = ("歩兵", "騎兵", "重装兵", "弓兵")  # 根張(工兵)は非戦闘職なので除外
+DISPLAY = {"歩兵": "苔兵", "騎兵": "棘走", "重装兵": "岩守", "弓兵": "毒舞", "工兵": "根張"}
+
+
+def duel_report(samples=150, seed="0", attribute=False):
+    """階級どうし・既存駒と軽量級の1対1（隣接・同時ダメージ・連撃込み）の集計。
+    attribute=Falseなら属性相性なし、Trueなら実際の属性で×2を掛ける。"""
+    rng = random.Random(f"duel-{seed}")
+    cls = {wc: [S.derive_stats(S.random_genome(rng, wc), 0) for _ in range(samples)]
+           for wc in ("light", "middle", "heavy")}
+    ta = CONFIG["type_advantage"]
+
+    def mult(x, y):
+        if not attribute:
+            return 1.0
+        ax = x.get("attribute")
+        ay = y.get("attribute")
+        return ta["multiplier"] if ax and ay and ta["pairs"].get(ax) == ay else 1.0
+
+    out = {"class": {}, "core_vs_light": {}}
+    for big, small in (("heavy", "light"), ("heavy", "middle"), ("middle", "light")):
+        loss = draw = 0
+        n = 0
+        for a in cls[big]:
+            for b in cls[small]:
+                r, _, _, _ = duel_detail(a, b, mult(a, b), mult(b, a))
+                n += 1
+                loss += r == 0.0
+                draw += r == 0.5
+        out["class"][f"{big}_vs_{small}"] = {"loss": round(loss / n, 4), "draw": round(draw / n, 4)}
+    for k in DUEL_CORE:
+        c = CONFIG["pieces"][k]
+        loss = draw = 0
+        death_rounds = []   # 既存駒が倒されたときのラウンド数
+        kill_rounds = []    # 既存駒が軽量級を倒したときのラウンド数
+        multi = 0
+        for b in cls["light"]:
+            r, rounds, _, hb_n = duel_detail(c, b, mult(c, b), mult(b, c))
+            multi += hb_n > 1
+            loss += r == 0.0
+            draw += r == 0.5
+            (kill_rounds if r == 1.0 else death_rounds).append(rounds)
+        med = lambda xs: sorted(xs)[len(xs) // 2] if xs else None
+        out["core_vs_light"][k] = {
+            "loss": round(loss / samples, 4), "draw": round(draw / samples, 4),
+            "light_multi_hit_rate": round(multi / samples, 3),
+            "median_rounds_to_kill_light": med(kill_rounds),
+            "median_rounds_when_core_dies": med(death_rounds),
+        }
+    return out
+
+
+def cmd_duels(args):
+    apply_config_overrides(json.loads(args.overrides) if args.overrides else None)
+    for attr in (False, True):
+        rep = duel_report(args.samples, args.seed, attribute=attr)
+        print(f"== 1対1（{'属性相性あり' if attr else '属性相性なし'}）")
+        for k, v in rep["class"].items():
+            print(f"  {k:16s} 負け{v['loss']:.1%} 相打ち{v['draw']:.1%}")
+        for k, v in rep["core_vs_light"].items():
+            print(f"  {DISPLAY[k]} vs 軽量級: 負け{v['loss']:.1%} 相打ち{v['draw']:.1%} "
+                  f"| 軽量級が連撃する割合{v['light_multi_hit_rate']:.0%} "
+                  f"| 勝つとき{v['median_rounds_to_kill_light']}R目 / 負けるとき{v['median_rounds_when_core_dies']}R目（中央値）")
+        if not attr:
+            neutral = rep
+    print("record:", save_record("duels", args, {"neutral": neutral}))
 
 
 def cmd_calibrate(args):
@@ -550,26 +628,62 @@ def _shaped_piece(power, atk_hp_ratio, cost=450):
             "ranged": False, "range": 0, "attribute": "crush", "role": "重装兵"}
 
 
+def mass_shape_pieces(overrides=None):
+    """mass式で同じ重量(250)・配分だけ違う2体（σ=0.7 と 0.3）。"""
+    apply_config_overrides(overrides)
+    ms = CONFIG["sprigling_stats"]["mass"]
+    out = []
+    for sigma in (0.7, 0.3):
+        sigma = max(ms["sigma_min"], min(ms["sigma_max"], sigma))
+        r = sigma / (1 - sigma)
+        p = _shaped_piece(1, 1, cost=475)
+        p["atk"] = round(ms["atk0"] * r ** ms["atk_shape_exp"])
+        p["hp"] = round(ms["hp0"] * r ** (-ms["hp_shape_exp"]))
+        p["siege"] = round(r ** (-ms["atk_shape_exp"]), 3)
+        out.append(p)
+    return out
+
+
+def run_shape_forced(overrides, pairs, workers, seed="0"):
+    """mass式の攻撃寄り(σ=0.7) vs 耐久寄り(σ=0.3)を、それしか動員できない条件で戦わせた
+    攻撃寄り側のスコア。0.5なら攻撃と耐久の価値が釣り合っている。"""
+    atk_p, hp_p = mass_shape_pieces(overrides)
+    ov = copy.deepcopy(overrides) if overrides else {}
+    ov.setdefault("pieces", {}).update({"S:atk": atk_p, "S:hp": hp_p})
+    sc = {"config_overrides": ov, "spriglings": {},
+          "rosters": {"A": ["S:atk"], "B": ["S:hp"]}, "bots": {"A": "heuristic", "B": "heuristic"}}
+    res = run_pairs([(sc, f"shape{seed}-{j}") for j in range(pairs)], workers)
+    return lab_stats.summarize([r["pair_score"] for r in res])
+
+
 def cmd_shape_split(args):
     """同コスト・同HP×攻撃力で形だけ違う2駒（攻撃寄り vs HP寄り）を、
     (a) 既存5種と一緒に選べる / (b) それしか動員できない（強制）
     × AIの駒評価が 従来式 / 苔兵の比率に合わせた式（hp_valuation_bonus=0.8）
     の4条件で戦わせる。(b)で差が消えれば「AIの選り好み」、残れば「ゲームの仕組み」。"""
-    atk_p = _shaped_piece(8100, 0.25)
-    hp_p = _shaped_piece(8100, 0.12)
     base = list(BASE_KINDS)
     consistent = {"type": "heuristic", "weights": {"hp_valuation_bonus": 0.8}}
-    conds = [
-        ("mixed / default AI", base + ["S:atk"], base + ["S:hp"], "heuristic"),
-        ("mixed / consistent AI", base + ["S:atk"], base + ["S:hp"], consistent),
-        ("forced / default AI", ["S:atk"], ["S:hp"], "heuristic"),
-        ("forced / consistent AI", ["S:atk"], ["S:hp"], consistent),
-    ]
+    overrides = json.loads(args.overrides) if args.overrides else {}
+    if args.mass:
+        # mass式で同じ重量(250)・配分だけ違う2体（σ=0.7 と 0.3）を作る
+        atk_p, hp_p = mass_shape_pieces(overrides or None)
+        conds = [("forced / default AI", ["S:atk"], ["S:hp"], "heuristic")]
+    else:
+        atk_p = _shaped_piece(8100, 0.25)
+        hp_p = _shaped_piece(8100, 0.12)
+        conds = [
+            ("mixed / default AI", base + ["S:atk"], base + ["S:hp"], "heuristic"),
+            ("mixed / consistent AI", base + ["S:atk"], base + ["S:hp"], consistent),
+            ("forced / default AI", ["S:atk"], ["S:hp"], "heuristic"),
+            ("forced / consistent AI", ["S:atk"], ["S:hp"], consistent),
+        ]
     print(f"攻撃寄り HP{atk_p['hp']} ATK{atk_p['atk']} / HP寄り HP{hp_p['hp']} ATK{hp_p['atk']} "
-          f"（どちらも450RP・HP×ATK≈8100・crush）")
+          f"（同コスト・crush）")
     rows = {}
     for name, ra, rb, bot in conds:
-        sc = {"config_overrides": {"pieces": {"S:atk": atk_p, "S:hp": hp_p}}, "spriglings": {},
+        ov = copy.deepcopy(overrides)
+        ov.setdefault("pieces", {}).update({"S:atk": atk_p, "S:hp": hp_p})
+        sc = {"config_overrides": ov, "spriglings": {},
               "rosters": {"A": ra, "B": rb}, "bots": {"A": bot, "B": bot}}
         res = run_pairs([(sc, f"split{args.seed}-{j}") for j in range(args.pairs)], args.workers)
         summ = lab_stats.summarize([r["pair_score"] for r in res])
@@ -633,6 +747,12 @@ def main(argv=None):
     p.add_argument("--batch", type=int, default=20)
     p.set_defaults(func=cmd_compare)
 
+    p = sub.add_parser("duels")
+    p.add_argument("--samples", type=int, default=150)
+    p.add_argument("--overrides")
+    p.add_argument("--seed", default="0")
+    p.set_defaults(func=cmd_duels)
+
     p = sub.add_parser("classes")
     p.add_argument("--mode", choices=("vs-base", "bring"), default="vs-base")
     p.add_argument("--pairs", type=int, default=100)
@@ -671,6 +791,8 @@ def main(argv=None):
 
     p = sub.add_parser("shape-split")
     p.add_argument("--pairs", type=int, default=400)
+    p.add_argument("--mass", action="store_true", help="mass式で配分だけ違う2体（σ=0.7/0.3）を比べる")
+    p.add_argument("--overrides", help="CONFIGの上書き(JSON)。--massと組み合わせて攻城ルール等を切り替える")
     p.add_argument("--seed", default="0")
     p.set_defaults(func=cmd_shape_split)
 
