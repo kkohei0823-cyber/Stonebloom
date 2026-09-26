@@ -16,8 +16,12 @@ python3 verify_lab.py calibrate                  # ステータス式の静的�
 python3 verify_lab.py aa-test --pairs 400        # 環境の健全性（同条件で0.5になるか）
 python3 verify_lab.py repro                      # 同じ対局が同じ結果になるか
 python3 verify_lab.py compare --a heuristic --b heuristic --random-rosters --pairs 400 --sprt 0.5,0.55
-python3 verify_lab.py classes --mode vs-base --pairs 200   # 階級ごと: Sprigling込み vs 既存5種のみ
-python3 verify_lab.py classes --mode bring --pairs 200     # 両者が1体持ち込み、階級総当たり
+python3 verify_lab.py classes --mode pure --pairs 200      # 対人戦の形: 各側5体が同じ階級のSprigling、階級総当たり
+python3 verify_lab.py classes --mode pure --overrides '{"sprigling_stats":{"placement_cost_ratio":0.3}}'
+python3 verify_lab.py classes --mode vs-base --pairs 200   # （ボス戦の形）Sprigling込み vs 既存5種のみ
+python3 verify_lab.py classes --mode bring --pairs 200     # （ボス戦の形）既存5種＋1体持ち込み、階級総当たり
+python3 tune_stat_model.py --model mass --trials 60 --pairs 60 --storage sqlite:///runs/mass.db \
+    --targets '{"pure":{"light_vs_middle":0.3,"middle_vs_heavy":0.3,"light_vs_heavy":0.15},"shape":{"forced":0.5}}'
 python3 verify_lab.py classes --mode bring --overrides '{"sprigling_stats":{"model":"physical"},"combat":{"initiative":true}}'
 python3 verify_lab.py exploit --weight-class middle --pop 12 --gens 6
 python3 tune_sprigling_ai.py --trials 60 --pairs 80 --storage sqlite:///runs/ai.db   # AIの重みを最適化（要 pip install optuna）
@@ -90,6 +94,30 @@ exploitの再検定にも同じ補正を入れた。
 この程度の予算では、ヒューリスティックAIの重みはほぼ現状が局所最適。
 差が小さい改善（+2%前後）を拾うには1候補あたり数千ペアが必要。
 
+## 階級バランスの数値の読み方（重要）
+
+`classes` の値は全て**左側（軽い側）の勝率**（勝ち1・引き分け0.5）。重い側の勝率は 1−値。
+- **pure（対人戦の形）**: 各側の5体がすべてその階級のSprigling。階級そのものの強さを比べる本命の検証。
+- **bring**: 両者が既存5種＋Sprigling1体。違うのは1体だけなので結果は0.5に薄まる（階級の強さの比較には不向き）。
+- **vs-base**: 「その階級のSpriglingを選択肢に持つ価値」。AIが重量級をほとんど動員しない（18%）ため、
+  重量級の値が低く出る。これも階級の強さではない。
+
+### pure で分かったこと（2026-09-26、各100〜150ペア、値は軽い側の勝率）
+
+| 条件 | 軽vs中 | 中vs重 | 軽vs重 |
+|---|---|---|---|
+| 現行（配置コスト=動員コスト×0.75） | 0.28 | **0.88** | 0.45 |
+| 配置コスト比 0.4 | 0.17 | 0.50 | 0.10 |
+| 配置コスト比 0.2 | 0.16 | 0.32 | 0.02 |
+| 重量級の移動-1なし | 0.28 | 0.77 | 0.48 |
+| 初期RP 1000 | 0.23 | 0.69 | 0.29 |
+
+1対1では重量級は負けないが、対人戦の形では重量級が中量級に大負けする。原因は配置コスト:
+持ち込んだ駒のゲーム内の値段は配置コストだけで、×0.75だと重量級は1体390〜750RPになり
+（初期500RP・収入1ラウンド約100RP〜）、展開が大きく遅れる。配置コスト比が主なレバー。
+0.75は既存5種込みの旧検証で決めた値で、対人戦の形には合っていない。目標を決めて
+`tune_stat_model.py --targets` で探索する（探索対象に placement_cost_ratio を含む）。
+
 ## AI比較・Optunaでの対局構成（compare --random-rosters / tune_sprigling_ai.py）
 
 既定は対人戦と同じ形: 既存5種は使わず、各側のSprigling 5体（階級は軽・中・重を均等に割り当て）が
@@ -139,6 +167,24 @@ A/Aテスト（同じAI同士、既定の形）: mirror 400ペア 0.486、swap 4
   physical式で出ていたcrushタンクは出なくなった（材質は重量と配分にしか効かず二重取りが消えた）
 
 `sprigling_stats.model` を "physical" / "cost" にすれば旧式も使える。係数は `config.py`。
+
+## Whittlewispからどこまで引き継いでいるか
+
+| Whittlewispの仕組み | Stonebloom（Sprigling）での扱い |
+|---|---|
+| 重量式（length×size×本数×部位係数×材質係数） | **そのまま使用**（動員コスト・強さ・階級の元） |
+| 部位の耐久式 `compute_max_dur`（脚は長いほど脆い、材質係数） | 合計を「耐久の生値」として使用（攻撃/耐久の配分σにだけ効く） |
+| 技の獲得条件（打撃 size≥1 / 薙ぎ払い length≥1 / 一撃集中 size≥2 / 突き刺し length≥2）と威力 (5+3×size)×技倍率 | 「攻撃の生値」（最強部位＋他部位×0.25）としてだけ使用。**技そのものは戦闘に登場しない** |
+| 個体差ロール（±1）・配置パターン | 使用（シード固定で1体ごとに決まる） |
+| 材質（bind/pierce/crush） | 重量への寄与が最大の材質を駒の属性にする |
+| 脚の長さ | 移動力（length≥1で+1）と素早さ（戦闘には未使用） |
+| 範囲攻撃（薙ぎ払いの巻き添え）・貫通（突き刺し） | **引き継いでいない**（Whittlewisp側でも巻き添えは骨組みのみで未実装） |
+| 高さ(Elevation)・リーチ・命中/空振り・目耳・呼吸・疲労・転倒・威嚇 | 引き継いでいない |
+| 部位ごとの破壊・vital部位・コアHP | 引き継いでいない（駒はHP1本） |
+| 技の選択・狙う部位の選択（AI） | 引き継いでいない（駒は隣接する敵全員にATKを分割して与える＝既存駒と同じ） |
+
+Spriglingは全て近接（射程1）。技の種類を戦闘に反映する場合の案（未実装）:
+突き刺し→射程2、薙ぎ払い→隣接全員に分割せず（範囲）、一撃集中→1体に集中。
 
 ## 1対1条件と攻撃偏重の対策の検証（2026-09-26）
 

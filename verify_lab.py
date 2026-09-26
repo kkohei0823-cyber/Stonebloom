@@ -18,7 +18,8 @@ Sprigling（ステータスが固定でない駒）時代の検証環境。3つ�
   calibrate        Spriglingのステータス式の静的チェック（階級ごとの強さ、既存駒との1対1）
   compare          AI同士の比較。--random-rosters でペアごとに違うSprigling構成を両者に配る
   duels            1対1の条件チェック（重量級は軽/中に負けない、既存駒は軽量級に負けない）
-  classes          重量階級ごとのバランス（vs-base: 既存5種のみの相手と / bring: 階級総当たり）
+  classes          重量階級ごとのバランス（pure: 各側5体が同じ階級のSpriglingで階級総当たり＝対人戦の形 /
+                   vs-base: 既存5種のみの相手と / bring: 既存5種＋1体持ち込みで階級総当たり）
   exploit          壊れたビルドの自動探索
   placement-sweep  配置コスト比率ごとの、Spriglingの採用率と勝率
   aa-test          両側同条件の対局でスコアが0.5になるか（検証環境そのもののバグ検出）
@@ -515,6 +516,20 @@ def class_scenarios(mode, seed, overrides, bot, per_class=3):
             out[wc] = {"config_overrides": overrides, "spriglings": spr,
                        "rosters": {"A": base + [f"S:{n}" for n in spr], "B": base},
                        "bots": {"A": bot, "B": bot}}
+    elif mode == "pure":
+        # 対人戦の形で階級どうしを比べる: 各側の5体がすべてその階級のSprigling（既存5種なし）。
+        # 動員（追加）もその5体だけ。値は左側の階級の勝率。
+        for wa, wb in CLASS_PAIRS:
+            ga = _class_genomes(f"{seed}-A", wa, per_class)
+            gb = _class_genomes(f"{seed}-B", wb, per_class)
+            spr = {**{f"a{i}": {"genome": g, "seed": 0} for i, g in enumerate(ga)},
+                   **{f"b{i}": {"genome": g, "seed": 0} for i, g in enumerate(gb)}}
+            ka = [f"S:a{i}" for i in range(per_class)]
+            kb = [f"S:b{i}" for i in range(per_class)]
+            out[f"{wa}_vs_{wb}"] = {"config_overrides": overrides, "spriglings": spr,
+                                    "rosters": {"A": ka, "B": kb},
+                                    "start_reserve": {"A": ka, "B": kb},
+                                    "bots": {"A": bot, "B": bot}}
     else:  # bring: 両者が1体ずつ持ち込み（最初の手駒）、同じ駒を追加動員もできる
         for wa, wb in CLASS_PAIRS:
             ga = _class_genomes(seed, wa, 1)[0]
@@ -529,8 +544,9 @@ def class_scenarios(mode, seed, overrides, bot, per_class=3):
 
 def run_classes(mode, pairs, overrides, bot, workers, seed="0"):
     tasks, labels = [], []
+    per_class = 5 if mode == "pure" else 3
     for j in range(pairs):
-        for label, sc in class_scenarios(mode, f"{seed}-{j}", overrides, bot).items():
+        for label, sc in class_scenarios(mode, f"{seed}-{j}", overrides, bot, per_class).items():
             tasks.append((sc, f"cls-{seed}-{j}"))
             labels.append(label)
     res = run_pairs(tasks, workers)
@@ -820,7 +836,8 @@ def main(argv=None):
     p.set_defaults(func=cmd_duels)
 
     p = sub.add_parser("classes")
-    p.add_argument("--mode", choices=("vs-base", "bring"), default="vs-base")
+    p.add_argument("--mode", choices=("pure", "vs-base", "bring"), default="pure",
+                   help="pure=各側5体すべてその階級のSprigling（対人戦の形） / vs-base / bring（既存5種込み）")
     p.add_argument("--pairs", type=int, default=100)
     p.add_argument("--overrides", help='CONFIGの上書き(JSON) 例: \'{"sprigling_stats":{"model":"physical"}}\'')
     p.add_argument("--bot", default="heuristic", choices=("heuristic", "search"))

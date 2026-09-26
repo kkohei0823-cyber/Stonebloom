@@ -14,11 +14,11 @@ Spriglingのステータス式の係数と戦闘ルール（連撃・攻城）�
     動員コストが根張(300)以上のSprigling vs 根張 : 負け 0%
   相打ちは負けに数えない。
 
-■ 実対局の目標（損失 = Σ(スコア − 目標)²）
-  vs-base（Sprigling込み vs 既存5種のみ）   : 軽0.45 / 中0.55 / 重0.55
-  bring（両者1体持ち込み・階級総当たり）     : 軽vs中0.45 / 中vs重0.45 / 軽vs重0.40
-                                              （重いほうが少し有利。行き過ぎない）
-  shape（--model mass のみ）: 同じ重量で攻撃寄り vs 耐久寄り（強制動員）が 0.50
+■ 実対局の目標（損失 = Σ(スコア − 目標)²。値は左側＝軽い側の勝率。--targets で変更）
+  pure（対人戦の形: 各側5体がすべてその階級のSprigling）: 軽vs中0.30 / 中vs重0.30 / 軽vs重0.15（暫定）
+  shape: 同じ重量で攻撃寄り vs 耐久寄り（強制動員）が 0.50
+  （既存5種込みの旧目標は TARGETS["mass_with_base"]）
+  探索対象には配置コスト比（placement_cost_ratio）も含む。
 ビルドはシードから決まり全trial共通（共通乱数法）。最後に最良trialを新しいシードで再計測する。
 
 例:
@@ -37,7 +37,14 @@ TARGETS = {
         "vs-base": {"light": 0.45, "middle": 0.55, "heavy": 0.55},
         "bring": {"light_vs_middle": 0.5, "middle_vs_heavy": 0.5, "light_vs_heavy": 0.5},
     },
+    # 既定は対人戦の形（pure: 各側5体がすべてその階級のSprigling）。値は左側（軽い側）の勝率の目標。
+    # 暫定値: 重いほうがはっきり勝つが全勝ではない。--targets で上書きする前提。
     "mass": {
+        "pure": {"light_vs_middle": 0.30, "middle_vs_heavy": 0.30, "light_vs_heavy": 0.15},
+        "shape": {"forced": 0.5},
+    },
+    # 旧来の既存5種込みの目標（--targets に渡せば使える）
+    "mass_with_base": {
         "vs-base": {"light": 0.45, "middle": 0.55, "heavy": 0.55},
         "bring": {"light_vs_middle": 0.45, "middle_vs_heavy": 0.45, "light_vs_heavy": 0.40},
         "shape": {"forced": 0.5},
@@ -73,6 +80,9 @@ def suggest(trial, model):
         "siege_mass_exp": trial.suggest_float("siege_mass_exp", 0.0, 1.0),
         "class_step": trial.suggest_float("class_step", 0.0, 0.15),
     }
+    # 配置コスト比（配置コスト = 動員コスト × これ）。対人戦の形では持ち込んだ駒の
+    # ゲーム内の値段はこれだけなので、重いほど展開が遅れる度合いを直接決める。
+    placement = trial.suggest_float("placement_cost_ratio", 0.1, 0.8)
     multi = trial.suggest_categorical("multi_attack", [False, True])
     combat = {"multi_attack": multi, "initiative": False,
               "siege": trial.suggest_categorical("siege", [False, True]),
@@ -80,7 +90,8 @@ def suggest(trial, model):
     if multi:
         combat["max_hits"] = trial.suggest_int("max_hits", 2, 4)
         combat["extra_hit_efficiency"] = trial.suggest_float("extra_hit_efficiency", 0.2, 1.0)
-    return {"sprigling_stats": {"model": "mass", "mass": ms}, "combat": combat}
+    return {"sprigling_stats": {"model": "mass", "mass": ms, "placement_cost_ratio": placement},
+            "combat": combat}
 
 
 def constraint_violation(overrides, samples):
@@ -93,11 +104,13 @@ def constraint_violation(overrides, samples):
     return v, rep
 
 
-def measure(overrides, pairs, seed, workers, model):
+def measure(overrides, pairs, seed, workers, model, targets=None):
+    """targetsに含まれる検証（pure / vs-base / bring / shape）だけを実行する。"""
+    targets = targets or TARGETS[model]
     res = {mode: {l: r["score"] for l, r in
                   V.run_classes(mode, pairs, overrides, "heuristic", workers, seed).items()}
-           for mode in ("vs-base", "bring")}
-    if model == "mass":
+           for mode in targets if mode in ("pure", "vs-base", "bring")}
+    if "shape" in targets:
         res["shape"] = {"forced": V.run_shape_forced(overrides, pairs, workers, seed)["score"]}
     return res
 
@@ -122,12 +135,13 @@ def main(argv=None):
     ap.add_argument("--storage")
     ap.add_argument("--study-name")
     ap.add_argument("--out", default="best_stat_model.json")
+    ap.add_argument("--targets", help='目標(JSON)。例 \'{"pure":{"light_vs_middle":0.3,"middle_vs_heavy":0.3,"light_vs_heavy":0.15},"shape":{"forced":0.5}}\'')
     ap.add_argument("--warm-start", help="前回のbest_*.jsonのparamsを最初のtrialとして評価する")
     ap.add_argument("--warm-extra", help="warm-startのparamsに追加・上書きする値(JSON)")
     args = ap.parse_args(argv)
 
     import optuna
-    targets = TARGETS[args.model]
+    targets = json.loads(args.targets) if args.targets else TARGETS[args.model]
     check = args.model == "mass"
 
     def objective(trial):
@@ -138,7 +152,7 @@ def main(argv=None):
             if viol > 0:
                 print(f"trial {trial.number}: 1対1条件違反 {viol:.3%} → 棄却", flush=True)
                 return 10.0 + viol
-        res = measure(ov, args.pairs, f"stat{args.seed}", args.workers, args.model)
+        res = measure(ov, args.pairs, f"stat{args.seed}", args.workers, args.model, targets)
         trial.set_user_attr("result", res)
         value = loss(res, targets)
         print(f"trial {trial.number}: loss={value:.4f} {show(res)}", flush=True)
@@ -160,7 +174,7 @@ def main(argv=None):
         raise SystemExit("1対1条件を満たすtrialが無かった。--trialsを増やすか探索範囲を見直すこと。")
     ov = suggest(optuna.trial.FixedTrial(best.params), args.model)
     print("== 最良trialを新しいシードで再計測")
-    held = measure(ov, args.confirm_pairs, f"held{args.seed}", args.workers, args.model)
+    held = measure(ov, args.confirm_pairs, f"held{args.seed}", args.workers, args.model, targets)
     held_loss = loss(held, targets)
     out = {"model": args.model, "params": best.params, "overrides": ov, "targets": targets,
            "selection_loss": best.value, "held_out_loss": held_loss, "held_out": held}
@@ -168,6 +182,9 @@ def main(argv=None):
         viol, rep = constraint_violation(ov, 300)  # 大きめのサンプルで1対1条件を再確認
         out["duel_check"] = {"violation": viol, "report": rep}
         print(f"  1対1条件（各階級300体）: 違反 {viol:.3%}")
+        if viol > 0:
+            print("  [警告] 大きめのサンプルでは1対1条件を満たしていない。--duel-samples を増やして"
+                  "再探索するか、class_step を少し上げて duels で再確認すること。")
     print(f"  選抜時 loss={best.value:.4f} → 再計測 loss={held_loss:.4f}  {show(held)}")
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=1)
