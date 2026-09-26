@@ -1,0 +1,121 @@
+{
+ "model": "mass",
+ "params": {
+  "sigma_half_range": 0.1856199764383502,
+  "atk0": 43.309074491629254,
+  "hp0": 208.52364224493493,
+  "atk_mass_exp": 0.6685094872132534,
+  "hp_mass_exp": 0.7827506559189765,
+  "atk_shape_exp": 0.6184501435959485,
+  "hp_shape_exp": 0.6974534057700769,
+  "speed_mass_exp": 0.8510247203595018,
+  "leg_speed_coef": 0.23487788252826475,
+  "siege_mass_exp": 0.10933117727870055,
+  "multi_attack": false,
+  "siege": true
+ },
+ "overrides": {
+  "sprigling_stats": {
+   "model": "mass",
+   "mass": {
+    "atk0": 43.309074491629254,
+    "hp0": 208.52364224493493,
+    "atk_mass_exp": 0.6685094872132534,
+    "hp_mass_exp": 0.7827506559189765,
+    "atk_shape_exp": 0.6184501435959485,
+    "hp_shape_exp": 0.6974534057700769,
+    "sigma_min": 0.3143800235616498,
+    "sigma_max": 0.6856199764383502,
+    "speed_mass_exp": 0.8510247203595018,
+    "leg_speed_coef": 0.23487788252826475,
+    "siege_mass_exp": 0.10933117727870055
+   }
+  },
+  "combat": {
+   "multi_attack": false,
+   "initiative": false,
+   "siege": true
+  }
+ },
+ "targets": {
+  "vs-base": {
+   "light": 0.45,
+   "middle": 0.55,
+   "heavy": 0.55
+  },
+  "bring": {
+   "light_vs_middle": 0.45,
+   "middle_vs_heavy": 0.45,
+   "light_vs_heavy": 0.4
+  },
+  "shape": {
+   "forced": 0.5
+  }
+ },
+ "selection_loss": 0.03112056000000001,
+ "held_out_loss": 0.028900000000000002,
+ "held_out": {
+  "vs-base": {
+   "light": 0.445,
+   "middle": 0.5875,
+   "heavy": 0.4875
+  },
+  "bring": {
+   "light_vs_middle": 0.365,
+   "middle_vs_heavy": 0.4875,
+   "light_vs_heavy": 0.3375
+  },
+  "shape": {
+   "forced": 0.605
+  }
+ },
+ "duel_check": {
+  "violation": 0.0001,
+  "report": {
+   "class": {
+    "heavy_vs_light": {
+     "loss": 0.0,
+     "draw": 0.0
+    },
+    "heavy_vs_middle": {
+     "loss": 0.0001,
+     "draw": 0.0367
+    },
+    "middle_vs_light": {
+     "loss": 0.0001,
+     "draw": 0.0185
+    }
+   },
+   "core_vs_light": {
+    "歩兵": {
+     "loss": 0.0,
+     "draw": 0.0,
+     "light_multi_hit_rate": 0.0,
+     "median_rounds_to_kill_light": 3,
+     "median_rounds_when_core_dies": null
+    },
+    "騎兵": {
+     "loss": 0.0,
+     "draw": 0.0,
+     "light_multi_hit_rate": 0.0,
+     "median_rounds_to_kill_light": 2,
+     "median_rounds_when_core_dies": null
+    },
+    "重装兵": {
+     "loss": 0.0,
+     "draw": 0.0,
+     "light_multi_hit_rate": 0.0,
+     "median_rounds_to_kill_light": 4,
+     "median_rounds_when_core_dies": null
+    },
+    "弓兵": {
+     "loss": 0.0,
+     "draw": 0.0,
+     "light_multi_hit_rate": 0.0,
+     "median_rounds_to_kill_light": 3,
+     "median_rounds_when_core_dies": null
+    }
+   }
+  }
+ }
+}

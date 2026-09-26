@@ -467,6 +467,8 @@ WEIGHT_TIERS = [
     # 数押し志向 / 精鋭志向: 動員コストの安い駒 / 高い駒を好む（苔兵の400RPが基準点）。
     {"champion_index": 74, "tier": 5, "key": "swarm_pref", "label": "数押し志向", "default": 0.0, "implemented": True},
     {"champion_index": 75, "tier": 5, "key": "elite_pref", "label": "精鋭志向", "default": 0.0, "implemented": True},
+    # 耐久前線志向: HPの高い駒ほど敵の隣（前線）に立ちたがり、低い駒ほど避ける。
+    {"champion_index": 76, "tier": 5, "key": "tank_frontline_pref", "label": "耐久前線志向", "default": 0.0, "implemented": True},
 ]
 
 # 2026-09-26: Tier5新設前に作られたchampion_weights.json等のスナップショットは、
@@ -474,10 +476,10 @@ WEIGHT_TIERS = [
 SPRIGLING_TIER_KEYS = frozenset(t["key"] for t in WEIGHT_TIERS if t["tier"] == 5)
 
 TIER_WEIGHT_KEYS = tuple(t["key"] for t in WEIGHT_TIERS)
-assert len(TIER_WEIGHT_KEYS) == 75, "Tier1-5は合計75種であること（2026-09-26: Tier5（Sprigling時代の重み）6種新設69→75。2026-08-25: RP関連3種をBASE_WEIGHTSへ昇格したため60→57。2026-09-02: base_hp_panic_thresholdをBASE_WEIGHTSへ昇格したため57→56。2026-09-04: rush_opening_pressure新設（Tier4）56→57。2026-09-09: AIビルドモード向け新規重み12種新設（opening_tempo_pref/comeback_desperation_pref/tempo_loss_aversion/mirror_match_awareness/first_kill_momentum/signature_unit_affinity×5/flourish_tiebreak_pref/endgame_clock_bluff）57→69。詳細はanalyze_tuning_run_handoff.md 3.20節参照）"
+assert len(TIER_WEIGHT_KEYS) == 76, "Tier1-5は合計76種であること（2026-09-26: Tier5（Sprigling時代の重み）7種新設69→76。2026-08-25: RP関連3種をBASE_WEIGHTSへ昇格したため60→57。2026-09-02: base_hp_panic_thresholdをBASE_WEIGHTSへ昇格したため57→56。2026-09-04: rush_opening_pressure新設（Tier4）56→57。2026-09-09: AIビルドモード向け新規重み12種新設（opening_tempo_pref/comeback_desperation_pref/tempo_loss_aversion/mirror_match_awareness/first_kill_momentum/signature_unit_affinity×5/flourish_tiebreak_pref/endgame_clock_bluff）57→69。詳細はanalyze_tuning_run_handoff.md 3.20節参照）"
 assert len(set(TIER_WEIGHT_KEYS) & set(BASE_WEIGHT_KEYS)) == 0, "初期解放セットとキー名が重複していないこと"
-assert sorted(t["champion_index"] for t in WEIGHT_TIERS) == list(range(1, 76)), \
-    "champion_indexは1〜75が過不足なく1つずつ割り当てられていること（2026-09-26: Tier5の6種新設により1〜69→1〜75。2026-09-04: rush_opening_pressure新設により1〜56→1〜57。2026-09-09: 12種新設により1〜57→1〜69）"
+assert sorted(t["champion_index"] for t in WEIGHT_TIERS) == list(range(1, 77)), \
+    "champion_indexは1〜76が過不足なく1つずつ割り当てられていること（2026-09-26: Tier5の7種新設により1〜69→1〜76。2026-09-04: rush_opening_pressure新設により1〜56→1〜57。2026-09-09: 12種新設により1〜57→1〜69）"
 
 WEIGHT_TIER_BY_KEY = {t["key"]: t for t in WEIGHT_TIERS}
 
@@ -503,8 +505,8 @@ HEURISTIC_WEIGHTS.update(copy.deepcopy(ENGINE_ONLY_WEIGHTS))
 for _t in WEIGHT_TIERS:
     HEURISTIC_WEIGHTS[_t["key"]] = _t["default"]
 
-assert len(HEURISTIC_WEIGHTS) == 27 + 75 + len(ENGINE_ONLY_WEIGHTS), \
-    "HEURISTIC_WEIGHTSは 27(初期) + 75(Tier1-5) + engine_only の合計であること（2026-09-26: Tier5新設69→75。2026-09-02: base_hp_panic_thresholdをTier4からBASE_WEIGHTSへ昇格したため23+57→24+56に更新。同日試験導入したbase_approach_defense_priorityは実測で悪化が確認されたため撤回済み。2026-09-04: rp_income_margin新設24→25、base_pressure_ramp_rounds新設25→26。あわせてTier4にrush_opening_pressure新設56→57。2026-09-09: advance_ramp_rounds新設26→27、Tier4にAIビルドモード向け新規重み12種新設57→69）"
+assert len(HEURISTIC_WEIGHTS) == 27 + 76 + len(ENGINE_ONLY_WEIGHTS), \
+    "HEURISTIC_WEIGHTSは 27(初期) + 76(Tier1-5) + engine_only の合計であること（2026-09-26: Tier5新設69→76。2026-09-02: base_hp_panic_thresholdをTier4からBASE_WEIGHTSへ昇格したため23+57→24+56に更新。同日試験導入したbase_approach_defense_priorityは実測で悪化が確認されたため撤回済み。2026-09-04: rp_income_margin新設24→25、base_pressure_ramp_rounds新設25→26。あわせてTier4にrush_opening_pressure新設56→57。2026-09-09: advance_ramp_rounds新設26→27、Tier4にAIビルドモード向け新規重み12種新設57→69）"
 
 
 # ============================================================

@@ -645,14 +645,14 @@ def mass_shape_pieces(overrides=None):
     return out
 
 
-def run_shape_forced(overrides, pairs, workers, seed="0"):
+def run_shape_forced(overrides, pairs, workers, seed="0", bot="heuristic"):
     """mass式の攻撃寄り(σ=0.7) vs 耐久寄り(σ=0.3)を、それしか動員できない条件で戦わせた
     攻撃寄り側のスコア。0.5なら攻撃と耐久の価値が釣り合っている。"""
     atk_p, hp_p = mass_shape_pieces(overrides)
     ov = copy.deepcopy(overrides) if overrides else {}
     ov.setdefault("pieces", {}).update({"S:atk": atk_p, "S:hp": hp_p})
     sc = {"config_overrides": ov, "spriglings": {},
-          "rosters": {"A": ["S:atk"], "B": ["S:hp"]}, "bots": {"A": "heuristic", "B": "heuristic"}}
+          "rosters": {"A": ["S:atk"], "B": ["S:hp"]}, "bots": {"A": bot, "B": bot}}
     res = run_pairs([(sc, f"shape{seed}-{j}") for j in range(pairs)], workers)
     return lab_stats.summarize([r["pair_score"] for r in res])
 

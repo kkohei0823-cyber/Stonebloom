@@ -285,14 +285,18 @@ def _mass_model(genome, seed, raw, weight, produce_cost, move, atk_raw):
     作ってあり、本拠へのダメージは作り（攻撃寄りかどうか）に左右されず体重だけで決まる。"""
     ms = CONFIG["sprigling_stats"]["mass"]
     M = weight / ms["weight_ref"]
+    # 階級補正: 階級が1つ上がるごとに、攻撃力・HPの計算に使う実効重量を class_step 倍する
+    # （階級の境目付近で「わずかに軽い下の階級」に1対1で負けないようにするため）
+    cls_index = {"light": 0, "middle": 1, "heavy": 2}[weight_class_of(weight)]
+    M_str = M * (1.0 + ms.get("class_step", 0.0)) ** cls_index
     a_ref, d_ref = _shape_refs()
     A = atk_raw / a_ref
     D = raw["durability"] / d_ref
     sigma = A / (A + D) if (A + D) > 0 else 0.5
     sigma = max(ms["sigma_min"], min(ms["sigma_max"], sigma))
     r = sigma / (1 - sigma)
-    atk = max(1, int(ms["atk0"] * M ** ms["atk_mass_exp"] * r ** ms["atk_shape_exp"] + 0.5))
-    hp = max(1, int(ms["hp0"] * M ** ms["hp_mass_exp"] * r ** (-ms["hp_shape_exp"]) + 0.5))
+    atk = max(1, int(ms["atk0"] * M_str ** ms["atk_mass_exp"] * r ** ms["atk_shape_exp"] + 0.5))
+    hp = max(1, int(ms["hp0"] * M_str ** ms["hp_mass_exp"] * r ** (-ms["hp_shape_exp"]) + 0.5))
     leg = raw["leg_len"] if raw["leg_count"] else -2.0
     speed = round(CONFIG["combat"]["base_speed"] * M ** (-ms["speed_mass_exp"])
                   * max(0.25, 1.0 + ms["leg_speed_coef"] * leg), 1)

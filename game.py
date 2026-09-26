@@ -215,6 +215,32 @@ def apply_regen(board):
             piece.hp = min(piece.max_hp, piece.hp + rate * piece.max_hp)
 
 
+def _apply_guard(board, damage):
+    """かばう: 本拠が受けるダメージのうち guard_ratio の割合を、本拠に隣接する味方駒が
+    最大HPに比例して肩代わりする（damage辞書をその場で書き換える）。
+    guard_applies_to="sprigling" ならSpriglingだけが、"all" なら全駒がかばう。
+    1対1（本拠が絡まない戦闘）には一切影響しない。"""
+    cb = CONFIG["combat"]
+    ratio = cb.get("guard_ratio", 0.0)
+    if ratio <= 0:
+        return
+    for pos in list(damage):
+        base = board.grid.get(pos)
+        if base is None or base.kind != "本拠" or damage[pos] <= 0:
+            continue
+        guards = [p for p in board.adjacent_positions(pos)
+                  if p in board.grid and board.grid[p].owner == base.owner
+                  and board.grid[p].is_alive() and board.grid[p].kind != "本拠"
+                  and (cb.get("guard_applies_to") == "all" or board.grid[p].kind.startswith("S:"))]
+        if not guards:
+            continue
+        moved = damage[pos] * ratio
+        damage[pos] -= moved
+        total = sum(board.grid[g].max_hp for g in guards)
+        for g in guards:
+            damage[g] = damage.get(g, 0) + moved * board.grid[g].max_hp / total
+
+
 def resolve_combat(board, verbose=False):
     """呼吸点方式ダメージ計算。弓兵のみ遠隔（隣接以外）攻撃可能。
 
@@ -269,6 +295,7 @@ def resolve_combat(board, verbose=False):
             for t in targets:
                 mult = damage_multiplier(piece.kind, board.grid[t].kind)  # ②分割後に相性・連撃倍率
                 tier_damage[t] = tier_damage.get(t, 0) + dmg_each * mult
+        _apply_guard(board, tier_damage)
         for pos, dmg in tier_damage.items():
             board.grid[pos].hp -= dmg
             damage[pos] = damage.get(pos, 0) + dmg

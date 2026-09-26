@@ -121,6 +121,10 @@ CONFIG = {
         # 戦闘外回復（Spriglingのみ）: 敵と隣接していないラウンド終了時に最大HPのこの割合を回復。
         # HPの価値を「前線を入れ替えて粘る」形で上げる案。1対1の最中は発動しない。
         "sprigling_regen": 0.0,
+        # かばう: 本拠へのダメージのこの割合を、本拠に隣接する味方駒が最大HPに比例して肩代わりする。
+        # 「本拠の守りは敵を早く倒すことだけ」という攻撃偏重の非対称への対策案（HPが本拠を守る）。
+        "guard_ratio": 0.0,
+        "guard_applies_to": "sprigling",   # "sprigling" / "all"
     },
 
     "starting_reserve": ["歩兵", "騎兵", "重装兵", "弓兵", "工兵"],
@@ -176,6 +180,7 @@ CONFIG = {
             "sigma_min": 0.2, "sigma_max": 0.8,   # r は 0.25〜4 → 攻撃力 ×0.5〜×2 / HP ×2〜×0.5
             "speed_mass_exp": 1.0, "leg_speed_coef": 0.1,
             "siege_mass_exp": 0.0,   # 本拠へのダメージ = atk0 × M^(atk_mass_exp+これ)
+            "class_step": 0.0,       # 階級が1つ上がるごとに攻撃力・HP計算用の実効重量を(1+これ)倍
         },
         "physical": {
             "weight_ref": 250,        # 重量の基準点（中量級の標準ビルド付近）

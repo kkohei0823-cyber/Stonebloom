@@ -62,6 +62,31 @@ def test_physical_model_speed_and_multi_attack():
     reset_config()
 
 
+def test_guard_moves_base_damage_to_adjacent_sprigling():
+    from game import Board, make_piece, resolve_combat
+    apply_config_overrides({"combat": {"guard_ratio": 0.5}})
+    CONFIG["pieces"]["S:tank"] = dict(CONFIG["pieces"]["重装兵"], hp=400, atk=0, attribute=None)
+    board = Board(CONFIG["board_size"])
+    board.place((4, 8), make_piece("本拠", 0, movable=False))
+    board.place((3, 8), make_piece("S:tank", 0))
+    board.place((4, 7), make_piece("工兵", 1))  # 本拠にだけ隣接（(3, 8)のSpriglingとは隣接しない）
+    _, damage = resolve_combat(board)
+    base_dmg = damage[(4, 8)]
+    assert abs(base_dmg - 12 * 0.5) < 1e-9          # 工兵ATK12の半分だけ本拠へ
+    assert abs(damage[(3, 8)] - 12 * 0.5) < 1e-9    # 残り半分は隣のSpriglingが肩代わり
+    reset_config()
+
+
+def test_class_step_keeps_heavier_class_winning_1v1():
+    import verify_lab as V
+    apply_config_overrides({"sprigling_stats": {"model": "mass", "mass": {"class_step": 0.05}},
+                            "combat": {"multi_attack": False}})
+    rep = V.duel_report(60, "test", attribute=False)
+    assert rep["class"]["heavy_vs_light"]["loss"] == 0.0
+    assert all(r["loss"] == 0.0 for r in rep["core_vs_light"].values())
+    reset_config()
+
+
 def test_validate_genome_rejects_illegal_builds():
     g = S._genome(tail=S.part(count=1))
     assert S.validate_genome(g) == []

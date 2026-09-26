@@ -784,6 +784,14 @@ def sprigling_place_bonus(board, pos, kind, player, weights, on_vp_spot, exclude
             score += speed_pref * max(-2.0, min(2.0, math.log2(ratio)))
     if on_vp_spot and weights["heavy_anchor_pref"]:
         score += weights["heavy_anchor_pref"] * cfg["hp"] / 200
+    tank_pref = weights["tank_frontline_pref"]
+    if tank_pref:
+        # 耐久前線志向: HPが苔兵(200)より高い駒ほど敵の隣を好み、低い駒ほど避ける。
+        # 既存の"danger"（HPに関係なく敵の隣を嫌う）を、駒の打たれ強さで補正する。
+        enemies = sum(1 for n in board.adjacent_positions(pos)
+                      if n != exclude and n in board.grid and board.grid[n].owner != player
+                      and board.grid[n].kind != "本拠")
+        score += tank_pref * enemies * (cfg["hp"] / 200 - 1.0)
     return score
 
 
