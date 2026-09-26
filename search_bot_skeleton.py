@@ -18,7 +18,7 @@ import time
 from collections import Counter
 from config import CONFIG, RP_SCALE
 from weights import HEURISTIC_WEIGHTS, to_engine_signed, resolve_opponent_weights
-from game import Game, Board, Piece, Economy, resolve_combat
+from game import Game, Board, Piece, Economy, resolve_combat, role_of
 # （9章-10対応。以前は heuristic_bot.py 経由でimportしていたが、
 # HeuristicBot自体には依存しない関数群のため、依存関係をより直接的にした）。
 from heuristic_bot import HeuristicBot
@@ -64,6 +64,7 @@ def clone_game(game):
     new.econ.vp_tax_carry = list(game.econ.vp_tax_carry)
 
     new.reserve = {0: list(game.reserve[0]), 1: list(game.reserve[1])}
+    new.roster = game.roster
     new.engineer_positions = set(game.engineer_positions)
     new.round_number = game.round_number
     new.turn_order = list(game.turn_order)
@@ -273,9 +274,9 @@ def evaluate_state(game, player, weights=HEURISTIC_WEIGHTS, base_hp_weight=None)
     # をそのまま使う）で配線する。production_diversity_prefが「構成の偏り」という
     # 集計値を見るのに対し、こちらは駒種ごとに独立した重みで直接加点/減点する。
     for k, c in own_kind_counts.items():
-        score += c * weights[SIGNATURE_AFFINITY_KEY[k]]
+        score += c * weights[SIGNATURE_AFFINITY_KEY[role_of(k)]]
     for k, c in opp_kind_counts.items():
-        score -= c * weights[SIGNATURE_AFFINITY_KEY[k]]
+        score -= c * weights[SIGNATURE_AFFINITY_KEY[role_of(k)]]
 
     # 2026-09-09追加: opening_tempo_pref（3.20節#1）。序盤ほど、RPスポットの
     # 占有数差(own-opp)を強く評価する。「passしても目に見えて損はしない」という
@@ -1129,7 +1130,7 @@ class _ProductionEvalContext:
         # ことによる評価値の変化はkind・positionによらず常に一定（evaluate_state側の
         # 実装がown_kind_counts[kind]の単純な線形加算のため）。diversity_deltaと
         # 同じ理由で、全positions共通の値として1回だけ計算する。
-        signature_delta = weights[SIGNATURE_AFFINITY_KEY[kind]]
+        signature_delta = weights[SIGNATURE_AFFINITY_KEY[role_of(kind)]]
 
         # 2026-09-09追加: opening_tempo_pref（3.20節#1）。RPスポットへの配置
         # (pos in self.rp_pts)の場合のみ、own_rp_spots_ownedが1増える分の

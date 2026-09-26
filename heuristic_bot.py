@@ -55,7 +55,7 @@ import random
 from config import CONFIG, RP_SCALE
 from weights import HEURISTIC_WEIGHTS, to_engine_signed, resolve_opponent_weights
 from game import (
-    Game, Board, Piece, RandomBot, run_batch as random_run_batch, type_multiplier,
+    Game, Board, Piece, RandomBot, run_batch as random_run_batch, type_multiplier, role_of,
     is_damage_nullified,
 )
 from collections import Counter
@@ -182,7 +182,7 @@ class HeuristicBot:
                 score += (game.board.size - dist) * (self.w["advance"] * 0.2) * adv_mult
 
                 # ---- Tier1/Tier2 追加重み（2026-08-25追加） ----
-                score += self.w[KIND_TO_PLACE_PREF[kind]]
+                score += self.w[KIND_TO_PLACE_PREF[role_of(kind)]]
                 fav, unfav = _count_matchup_adjacent(game.board, pos, player, kind)
                 score += fav * self.w["favorable_matchup_bonus"]
                 score -= unfav * self.w["unfavorable_matchup_penalty"]
@@ -192,7 +192,7 @@ class HeuristicBot:
                 if kind == "工兵":
                     shield_targets = _count_adjacent_enemy_kind(game.board, pos, player, "弓兵")
                     score += shield_targets * self.w["engineer_shield_bonus"]
-                if kind == "重装兵" and friendly >= 2:
+                if role_of(kind) == "重装兵" and friendly >= 2:
                     score += self.w["heavy_frontline_bonus"]
                 own_base = CONFIG["base_positions"][player]
                 base_dist = game.board.distance(pos, own_base)
@@ -283,7 +283,7 @@ class HeuristicBot:
                 if advanced:
                     # 2026-09-09修正: advance_ramp_rounds。
                     score += self.w["advance"] * adv_mult
-                    if piece.kind == "騎兵" and new_dist < game.board.size // 2:
+                    if role_of(piece.kind) == "騎兵" and new_dist < game.board.size // 2:
                         score += self.w["cavalry_overextend_tolerance"]
 
                 dmg, kills, vp_spot_kills, rp_spot_kills, base_dmg = _potential_attack(
@@ -312,7 +312,7 @@ class HeuristicBot:
                     score -= self.w["tempo_loss_aversion"]
 
                 # ---- Tier1/Tier2 追加重み（2026-08-25追加） ----
-                score += self.w[KIND_TO_PLACE_PREF[piece.kind]] * 0.5  # 移動は配置ほど強く出さない
+                score += self.w[KIND_TO_PLACE_PREF[role_of(piece.kind)]] * 0.5  # 移動は配置ほど強く出さない
                 fav, unfav = _count_matchup_adjacent(game.board, dst, player, piece.kind, exclude=src)
                 score += fav * self.w["favorable_matchup_bonus"]
                 score -= unfav * self.w["unfavorable_matchup_penalty"]
@@ -327,7 +327,7 @@ class HeuristicBot:
                 if piece.kind == "工兵":
                     shield_targets = _count_adjacent_enemy_kind(game.board, dst, player, "弓兵", exclude=src)
                     score += shield_targets * self.w["engineer_shield_bonus"]
-                if piece.kind == "重装兵" and friendly >= 2:
+                if role_of(piece.kind) == "重装兵" and friendly >= 2:
                     score += self.w["heavy_frontline_bonus"]
                 own_base = CONFIG["base_positions"][player]
                 base_dist = game.board.distance(dst, own_base)
@@ -514,7 +514,7 @@ class HeuristicBot:
             # Tier1 #6-10: 駒種別の生産優先度（2026-08-25追加）。
             # efficiencyと同じレンジに収まるよう単純加算にしている
             # （_effはおよそ0.5〜5程度の値域）。
-            return base + self.w[KIND_TO_PRODUCE_PREF[kind]]
+            return base + self.w[KIND_TO_PRODUCE_PREF[role_of(kind)]]
 
         rp = game.econ.rp[player]
         reserve = game.reserve[player]
@@ -642,7 +642,7 @@ class HeuristicBot:
             # （自軍の駒種構成そのものへの状態評価）に配線しており、生産判断だけに
             # 閉じたこちら側とは配線層が異なる点に注意（詳細はscoring_common.py
             # SIGNATURE_AFFINITY_KEYのコメント参照）。
-            score += self.w[SIGNATURE_AFFINITY_KEY[kind]]
+            score += self.w[SIGNATURE_AFFINITY_KEY[role_of(kind)]]
 
             return score
 

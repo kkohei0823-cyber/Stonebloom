@@ -114,6 +114,13 @@ def attribute_of(kind):
     return CONFIG["pieces"][kind].get("attribute")
 
 
+def role_of(kind):
+    """AIが駒種ごとの重み（配置/動員の好み、壁役・突撃役ボーナス等）を引くときの役割名。
+    既存駒は自分自身、Sprigling（sprigling.register_sprigling()で登録）は性能値が
+    最も近い既存の三すくみ駒種（歩兵/騎兵/重装兵）を返す。"""
+    return CONFIG["pieces"][kind].get("role", kind)
+
+
 def type_multiplier(attacker_kind, defender_kind):
     """属性相性（三すくみ）によるダメージ倍率（検証ハンドブック6章）。
     攻撃側・防御側の駒種が持つ属性（CONFIG["pieces"][kind]["attribute"]）で判定し、
@@ -336,7 +343,9 @@ class Economy:
 # ゲーム本体
 # ============================================================
 class Game:
-    def __init__(self):
+    def __init__(self, roster=None):
+        """roster: {player: 動員できる駒種の集合}（省略時・Noneの要素はCONFIG["pieces"]の全駒種）。
+        検証環境で片方のプレイヤーにだけSpriglingを使わせる、といった非対称な対局に使う。"""
         self.board = Board(CONFIG["board_size"])
         self.econ = Economy()
         self.reserve = {0: list(CONFIG["starting_reserve"]), 1: list(CONFIG["starting_reserve"])}
@@ -364,6 +373,9 @@ class Game:
         # 「まだ誰も撃破していない」という初期状態からのモメンタム発生を
         # 正しくシミュレートするため）。
         self.total_kills = [0, 0]
+        roster = roster or {}
+        self.roster = {p: (frozenset(roster[p]) if roster.get(p) is not None else None)
+                       for p in (0, 1)}
 
         for owner, pos in CONFIG["base_positions"].items():
             self.board.place(pos, make_piece("本拠", owner, movable=False))
@@ -565,7 +577,9 @@ class Game:
                 continue
             if self.owned_piece_count(player) >= CONFIG["max_owned_pieces"]:
                 continue
+            allowed = self.roster[player]
             affordable = [k for k in CONFIG["pieces"] if k != "本拠"
+                          and (allowed is None or k in allowed)
                           and CONFIG["pieces"][k]["produce_cost"] <= self.econ.rp[player]]
             if not affordable:
                 continue

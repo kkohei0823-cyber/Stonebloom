@@ -118,6 +118,8 @@ CONFIG = {
     "max_owned_pieces": 9,  # reserve+盤上駒の合計上限（本拠は除く）。企画書2.2節
 
     # Whittlewisp重量 → 動員コスト(RP)の換算（weight_to_rp_cost()参照）
+    # 「動員コスト」はコード上のキー"produce_cost"（旧称: 生産コスト）。駒を一から作るのではなく
+    # 呼び寄せる、という表現に合わせて呼び名を変えた（キー名は互換のため据え置き）。
     #   cost = base_fee + (cost_at_heavy_limit - base_fee) * weight / heavy_weight_limit
     # 重量級上限(600)でちょうど1000RP(=rp_cap)。base_feeは「どんなに軽い駒でも最低限かかる
     # 動員費」で、1ラウンド分の基礎収入(100)に揃えてある。base_fee=0にすれば純粋な比例式になる。
@@ -125,6 +127,30 @@ CONFIG = {
         "heavy_weight_limit": 600,          # Whittlewisp config.WEIGHT_CLASS_LIMITS["heavy"]
         "cost_at_heavy_limit": 10 * RP_SCALE,
         "base_fee": 1 * RP_SCALE,
+    },
+
+    # Sprigling(Whittlewispの駒)のステータス算出（sprigling.derive_stats()参照）
+    #   総合力 HP×攻撃力 = power_per_rp × 動員コスト（移動力3なら × move3_power_mult）
+    #   既存の苔兵/棘走/岩守はHP×攻撃力=7200、動員コスト400/500/400。power_per_rp=18は
+    #   苔兵・岩守と同じ「RPあたりの強さ」、移動力3の割引0.8は棘走(7200/500=14.4)と同じ比率。
+    #   → 中量級上限(565RP)で既存駒の約1.4倍、R/H/W(約480-520RP)で約1.2-1.3倍、
+    #     軽量級上限(310RP)で約0.78倍（属性相性なしの1対1では既存駒に勝てない）。
+    #   HPと攻撃力の配分（形）は部位ごとのWhittlewisp式で決める:
+    #     shape = (攻撃力の生値 / 耐久の生値) / shape_ref_ratio  を [shape_min, shape_max] にクランプし、
+    #     攻撃力/HP = ref_atk_hp_ratio × shape（shape=1で苔兵と同じ比率 36/200）。
+    "sprigling_stats": {
+        "power_per_rp": 18.0,
+        "move3_power_mult": 0.8,
+        "ref_atk_hp_ratio": 0.18,
+        "shape_ref_ratio": 0.115,   # R/H/Wの(攻撃力生値/耐久生値)の平均
+        "shape_min": 0.25,
+        "shape_max": 4.0,
+        "atk_secondary_share": 0.25,
+        "move_base": 2,
+        "move_long_leg_threshold": 1.0,       # 脚の平均lengthがこれ以上なら移動力+1
+        "move_heavy_weight_threshold": 310,   # 重量がこれを超える（重量級）なら移動力-1
+        # 配置コスト = 動員コスト × この比率（暫定。既存5種の配置/動員の平均比≈0.76）
+        "placement_cost_ratio": 0.75,
     },
 }
 
