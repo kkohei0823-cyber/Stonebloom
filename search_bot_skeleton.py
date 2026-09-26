@@ -18,7 +18,7 @@ import time
 from collections import Counter
 from config import CONFIG, RP_SCALE
 from weights import HEURISTIC_WEIGHTS, to_engine_signed, resolve_opponent_weights
-from game import Game, Board, Piece, Economy, resolve_combat, role_of
+from game import Game, Board, Piece, Economy, resolve_combat, role_of, apply_regen
 # （9章-10対応。以前は heuristic_bot.py 経由でimportしていたが、
 # HeuristicBot自体には依存しない関数群のため、依存関係をより直接的にした）。
 from heuristic_bot import HeuristicBot
@@ -310,6 +310,7 @@ def resolve_round_end(game, production_bots=None):
     vp_spot_positions = set(vs["stars"]) | set(vs["tengen"])
 
     removed, damage = resolve_combat(game.board)
+    apply_regen(game.board)
     vp_kill_bonus = [0, 0]
     for pos, owner, kind in removed:
         game.placement_ban[pos] = (owner, game.round_number + 1)

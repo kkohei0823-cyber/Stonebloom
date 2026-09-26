@@ -298,6 +298,7 @@ def _mass_model(genome, seed, raw, weight, produce_cost, move, atk_raw):
                   * max(0.25, 1.0 + ms["leg_speed_coef"] * leg), 1)
     out = _finish(genome, seed, raw, weight, produce_cost, hp, atk, move, speed, round(sigma, 3))
     out["siege"] = round(r ** (-ms["atk_shape_exp"]) * M ** ms["siege_mass_exp"], 3)
+    out["regen"] = CONFIG["combat"]["sprigling_regen"]
     return out
 
 

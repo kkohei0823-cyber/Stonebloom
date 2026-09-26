@@ -640,6 +640,7 @@ def mass_shape_pieces(overrides=None):
         p["atk"] = round(ms["atk0"] * r ** ms["atk_shape_exp"])
         p["hp"] = round(ms["hp0"] * r ** (-ms["hp_shape_exp"]))
         p["siege"] = round(r ** (-ms["atk_shape_exp"]), 3)
+        p["regen"] = CONFIG["combat"]["sprigling_regen"]
         out.append(p)
     return out
 

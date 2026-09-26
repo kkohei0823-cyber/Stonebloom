@@ -200,6 +200,21 @@ def is_damage_nullified(attacker_kind, defender_kind):
     return di["pairs"].get(attacker_kind) == defender_kind
 
 
+def apply_regen(board):
+    """戦闘外回復: 敵駒と隣接していない駒は、最大HPの"regen"割合だけ回復する。
+    既存駒は regen を持たない（=0）ので、既定では何も起きない。Spriglingは
+    CONFIG["combat"]["sprigling_regen"] を持つ（sprigling._finish参照）。
+    1対1で殴り合っている最中は発動しないので、1対1の勝敗は変わらない。"""
+    for pos, piece in board.grid.items():
+        rate = CONFIG["pieces"][piece.kind].get("regen", 0.0)
+        if rate <= 0 or piece.hp >= piece.max_hp:
+            continue
+        engaged = any(p in board.grid and board.grid[p].owner != piece.owner
+                      for p in board.adjacent_positions(pos))
+        if not engaged:
+            piece.hp = min(piece.max_hp, piece.hp + rate * piece.max_hp)
+
+
 def resolve_combat(board, verbose=False):
     """呼吸点方式ダメージ計算。弓兵のみ遠隔（隣接以外）攻撃可能。
 
@@ -732,6 +747,7 @@ class Game:
             # 戦闘解決は両者が1手ずつ打ち終えた後、ラウンドに1回だけ行う
             # （手番内の後出し優位を解消するための変更）
             removed, damage = resolve_combat(self.board, verbose=verbose)
+            apply_regen(self.board)
             # 駒を失った側は、次のラウンドに限りその地点への再配置を禁止する
             vs = CONFIG["vp_spots"]
             vp_spot_positions = set(vs["stars"]) | set(vs["tengen"])
