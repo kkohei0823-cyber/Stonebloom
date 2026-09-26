@@ -47,6 +47,11 @@ import lab_stats
 import sprigling as S
 from config import CONFIG, apply_config_overrides
 from game import Game, RandomBot, type_multiplier
+# ボット関連は先に読み込んでおく（ワーカーはforkで親のメモリを引き継ぐので、
+# 長時間の実行中にファイルを編集しても実行中の検証には混ざらない）
+from heuristic_bot import HeuristicBot
+from search_bot_skeleton import SearchBot
+from weights import resolve_weights
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RUNS_DIR = os.path.join(HERE, "runs")
@@ -131,13 +136,10 @@ def make_bot(spec, rng_seed):
     if isinstance(spec, dict):
         kind = spec["type"]
         if spec.get("weights"):
-            from weights import resolve_weights
             weights = resolve_weights(spec["weights"])
     if kind == "heuristic":
-        from heuristic_bot import HeuristicBot
         return HeuristicBot(weights=weights, rng=random.Random(rng_seed))
     if kind == "search":
-        from search_bot_skeleton import SearchBot
         return SearchBot(weights=weights)  # rng=None: 完全決定論
     if kind == "random":
         return RandomBot()

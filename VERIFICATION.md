@@ -16,12 +16,21 @@ python3 verify_lab.py calibrate                  # ステータス式の静的�
 python3 verify_lab.py aa-test --pairs 400        # 環境の健全性（同条件で0.5になるか）
 python3 verify_lab.py repro                      # 同じ対局が同じ結果になるか
 python3 verify_lab.py compare --a heuristic --b heuristic --random-rosters --pairs 400 --sprt 0.5,0.55
+python3 verify_lab.py classes --mode vs-base --pairs 200   # 階級ごと: Sprigling込み vs 既存5種のみ
+python3 verify_lab.py classes --mode bring --pairs 200     # 両者が1体持ち込み、階級総当たり
+python3 verify_lab.py classes --mode bring --overrides '{"sprigling_stats":{"model":"physical"},"combat":{"initiative":true}}'
 python3 verify_lab.py exploit --weight-class middle --pop 12 --gens 6
+python3 tune_sprigling_ai.py --trials 40 --pairs 60        # OptunaでAIの重みを最適化（要 pip install optuna）
 python3 verify_lab.py placement-sweep --ratios 0.5,0.75,1.0 --pairs 200
 ```
 
 - `compare --random-rosters` はペアごとに違うランダムなSprigling構成を両者に配る。
   AIを改良したら、固定5駒種ではなくこちらで比べる（特定の構成への過剰適応を防ぐ）。
+- `classes` は同じシードなら同じビルドを引くので、`--overrides` だけ変えた2回の実行は
+  「同じビルドで式・ルールだけ違う」対応比較になる。
+- `tune_sprigling_ai.py` は全trialで同じシード列を使い（比較のノイズ削減）、最後に
+  上位候補を新しいシードでSPRT再検定する。`best_sprigling_ai.json` の
+  `"confirmed": true` のときだけ採用してよい。
 - `exploit` の判定: `BROKEN` = SPRTでH1（期待スコア≥0.6）採択、`OK` = H0（0.5）採択、
   `INCONCLUSIVE` = 上限ペア数まで決着せず。`採用率` が低い候補は、AIがその駒をほとんど
   動員していないので、結果の解釈に注意。
