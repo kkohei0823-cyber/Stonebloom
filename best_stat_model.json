@@ -1,0 +1,97 @@
+{
+ "params": {
+  "atk_scale": 0.8073737202001755,
+  "hp_scale": 1.5665848052138163,
+  "atk_weight_exp": 0.34807115809198397,
+  "hp_weight_exp": 0.8204087411955615,
+  "speed_weight_exp": 1.379679907522365,
+  "leg_speed_coef": 0.24077795422299997,
+  "initiative": false,
+  "multi_attack": true
+ },
+ "overrides": {
+  "sprigling_stats": {
+   "model": "physical",
+   "physical": {
+    "atk_scale": 0.8073737202001755,
+    "hp_scale": 1.5665848052138163,
+    "atk_weight_exp": 0.34807115809198397,
+    "hp_weight_exp": 0.8204087411955615,
+    "speed_weight_exp": 1.379679907522365,
+    "leg_speed_coef": 0.24077795422299997
+   }
+  },
+  "combat": {
+   "initiative": false,
+   "multi_attack": true
+  }
+ },
+ "targets": {
+  "vs-base": {
+   "light": 0.45,
+   "middle": 0.55,
+   "heavy": 0.55
+  },
+  "bring": {
+   "light_vs_middle": 0.5,
+   "middle_vs_heavy": 0.5,
+   "light_vs_heavy": 0.5
+  }
+ },
+ "selection_loss": 0.02611556000000002,
+ "held_out_loss": 0.009549999999999998,
+ "held_out": {
+  "vs-base": {
+   "light": {
+    "score": 0.5175,
+    "ci95": [
+     0.4667,
+     0.5683
+    ],
+    "adoption": 0.2013
+   },
+   "middle": {
+    "score": 0.4925,
+    "ci95": [
+     0.4417,
+     0.5433
+    ],
+    "adoption": 0.129
+   },
+   "heavy": {
+    "score": 0.525,
+    "ci95": [
+     0.475,
+     0.575
+    ],
+    "adoption": 0.0391
+   }
+  },
+  "bring": {
+   "light_vs_middle": {
+    "score": 0.5025,
+    "ci95": [
+     0.4522,
+     0.5528
+    ],
+    "adoption": 0.1199
+   },
+   "middle_vs_heavy": {
+    "score": 0.5325,
+    "ci95": [
+     0.4824,
+     0.5826
+    ],
+    "adoption": 0.0366
+   },
+   "light_vs_heavy": {
+    "score": 0.5,
+    "ci95": [
+     0.4471,
+     0.5529
+    ],
+    "adoption": 0.1228
+   }
+  }
+ }
+}

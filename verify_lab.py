@@ -235,8 +235,24 @@ def nearest_reference(stats, pool_stats):
 # ============================================================
 # calibrate: ステータス式の静的チェック
 # ============================================================
+def _hits(a, b):
+    cb = CONFIG["combat"]
+    if not cb["multi_attack"]:
+        return 1
+    base = cb["base_speed"]
+    ratio = a.get("speed", base) / max(b.get("speed", base), 1e-9)
+    n = 1
+    for i, th in enumerate(cb["multi_attack_thresholds"]):
+        if ratio >= th:
+            n = i + 2
+    return n
+
+
 def duel(a, b, mult_ab=1.0, mult_ba=1.0):
-    """隣接1対1の殴り合い（同時ダメージ）。aの勝ち=1, 引き分け=0.5, 負け=0。"""
+    """隣接1対1の殴り合い（同時ダメージ。連撃ルールが有効なら素早さ比の回数を掛ける）。
+    aの勝ち=1, 引き分け=0.5, 負け=0。"""
+    mult_ab *= _hits(a, b)
+    mult_ba *= _hits(b, a)
     ha, hb = a["hp"], b["hp"]
     for _ in range(10000):
         ha, hb = ha - b["atk"] * mult_ba, hb - a["atk"] * mult_ab
@@ -275,13 +291,17 @@ def cmd_calibrate(args):
         results["classes"][wc] = row
         print(f"  {wc:6s} 勝率 苔兵に{row['歩兵']:.0%} 棘走に{row['騎兵']:.0%} 岩守に{row['重装兵']:.0%} "
               f"| HP×ATKは既存駒の 中央値{row['power_vs_core_median']:.2f}倍 最大{row['power_vs_core_max']:.2f}倍")
+    # 軽量級が既存駒に1対1で勝つのは1%以下（連撃で稀に勝つ個体は許容）
     checks = {
-        "light_never_beats_core_neutral": all(results["classes"]["light"][k] == 0.0 for k in CORE_KINDS),
-        # 中量級の基準ビルド(R/H/W)の平均が既存駒よりやや強い
-        "reference_builds_slightly_stronger": 1.0 <= sum(
-            st["hp"] * st["atk"] for st in results["reference_builds"].values()
-        ) / len(results["reference_builds"]) / 7200 <= 1.4,
+        "light_rarely_beats_core_neutral": all(results["classes"]["light"][k] <= 0.01 for k in CORE_KINDS),
     }
+    if CONFIG["sprigling_stats"]["model"] == "cost":
+        # cost式のみ: 中量級の基準ビルド(R/H/W)のHP×攻撃力の平均が既存駒よりやや強い。
+        # physical式では「HP×攻撃力」が強さの物差しにならない（shape-split参照）ので
+        # 実対局の classes で判定する。
+        checks["reference_builds_slightly_stronger"] = 1.0 <= sum(
+            st["hp"] * st["atk"] for st in results["reference_builds"].values()
+        ) / len(results["reference_builds"]) / 7200 <= 1.4
     results["checks"] = checks
     for k, v in checks.items():
         print(f"  [{'OK' if v else 'NG'}] {k}")

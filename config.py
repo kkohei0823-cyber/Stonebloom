@@ -109,8 +109,8 @@ CONFIG = {
     # 有効にしても既存駒どうしの戦闘は変わらない（Spriglingとの戦闘にだけ効く）。
     "combat": {
         "base_speed": 100,
-        "initiative": False,       # 速い駒から先に攻撃し、撃破された駒は反撃できない
-        "multi_attack": False,     # 素早さの比が閾値以上なら攻撃回数が増える
+        "initiative": False,       # 速い駒から先に攻撃し、撃破された駒は反撃できない（探索では不採用）
+        "multi_attack": True,      # 素早さの比が閾値以上なら攻撃回数が増える（physical式とセットで採用）
         "multi_attack_thresholds": [2.0, 3.0, 4.0],   # 2倍→2回, 3倍→3回, 4倍→4回
     },
 
@@ -151,15 +151,19 @@ CONFIG = {
     "sprigling_stats": {
         # "cost": 強さの総量を動員コストで決める（下のpower_*）
         # "physical": 部位の式と重量からHP・攻撃力・素早さを直接決める（下のphysical）
-        "model": "cost",
+        # 2026-09-26: tune_stat_model.py（40trial、階級バランス目標）で選んだphysical式を既定にした。
+        # 新しいシード200ペアでの再計測: 既存5種相手 軽0.52/中0.49/重0.53、
+        # 持ち込み総当たり 軽vs中0.50/中vs重0.53/軽vs重0.50（全てCIが0.5を含む）。
+        # 係数の意味は下のコメント。値は best_stat_model.json の丸め。
+        "model": "physical",
         "physical": {
             "weight_ref": 250,        # 重量の基準点（中量級の標準ビルド付近）
-            "atk_scale": 2.0,         # R/H/Wの攻撃力が既存駒並み(約40)になる値
-            "atk_weight_exp": 1.0,    # 攻撃力 ∝ 技の威力 × (重量/基準)^これ
-            "hp_scale": 1.4,          # R/H/WのHPが既存駒並み(約230)になる値
-            "hp_weight_exp": 0.5,     # HP ∝ 耐久合計 × (重量/基準)^これ
-            "speed_weight_exp": 0.5,  # 素早さ ∝ (基準/重量)^これ
-            "leg_speed_coef": 0.1,    # 素早さ × (1 + これ × 脚の平均length)
+            "atk_scale": 0.81,        # 攻撃力の水準
+            "atk_weight_exp": 0.35,   # 攻撃力 ∝ 技の威力 × (重量/基準)^これ（重いほど一撃が重い）
+            "hp_scale": 1.57,         # HPの水準
+            "hp_weight_exp": 0.82,    # HP ∝ 耐久合計 × (重量/基準)^これ（重いほど打たれ強い）
+            "speed_weight_exp": 1.38, # 素早さ ∝ (基準/重量)^これ（軽いほど速い）
+            "leg_speed_coef": 0.24,   # 素早さ × (1 + これ × 脚の平均length)
         },
         "power_per_rp": 18.0,
         # 総合力を動員コストの何乗で伸ばすか（anchor RPでの値は power_per_rp×anchor で固定）。

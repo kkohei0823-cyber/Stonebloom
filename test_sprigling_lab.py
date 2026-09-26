@@ -8,12 +8,14 @@ import random
 
 import lab_stats
 import sprigling as S
-from config import CONFIG, reset_config
+from config import CONFIG, reset_config, apply_config_overrides
 from game import Game, role_of, type_multiplier
+
+COST_MODEL = {"sprigling_stats": {"model": "cost"}, "combat": {"multi_attack": False}}
 
 
 def test_reference_builds_are_middle_class_and_slightly_stronger():
-    reset_config()
+    apply_config_overrides(COST_MODEL)
     for name, g in S.REFERENCE_BUILDS.items():
         st = S.derive_stats(g, 0)
         assert st["sprigling"]["weight_class"] == "middle", name
@@ -32,7 +34,7 @@ def test_derive_stats_is_deterministic_and_restores_global_random():
 
 
 def test_power_scales_with_mobilization_cost():
-    reset_config()
+    apply_config_overrides(COST_MODEL)
     rng = random.Random(0)
     light = [S.derive_stats(S.random_genome(rng, "light"), 0) for _ in range(40)]
     heavy = [S.derive_stats(S.random_genome(rng, "heavy"), 0) for _ in range(40)]
@@ -40,6 +42,24 @@ def test_power_scales_with_mobilization_cost():
     assert min(s["hp"] * s["atk"] for s in heavy) > 7200
     for s in light + heavy:
         assert s["produce_cost"] <= CONFIG["sprigling_cost"]["cost_at_heavy_limit"]
+    reset_config()
+
+
+def test_physical_model_speed_and_multi_attack():
+    reset_config()
+    from game import hit_count
+    rng = random.Random(0)
+    light = [S.derive_stats(S.random_genome(rng, "light"), 0) for _ in range(30)]
+    heavy = [S.derive_stats(S.random_genome(rng, "heavy"), 0) for _ in range(30)]
+    med = lambda xs: sorted(xs)[len(xs) // 2]
+    assert med([s["speed"] for s in light]) > med([s["speed"] for s in heavy])  # 軽いほど速い
+    assert med([s["hp"] for s in light]) < med([s["hp"] for s in heavy])        # 重いほど打たれ強い
+    CONFIG["pieces"]["S:fast"] = dict(light[0], speed=250.0)
+    assert hit_count("S:fast", "歩兵") == 2      # 2.5倍速 → 2回
+    CONFIG["pieces"]["S:fast"]["speed"] = 400.0
+    assert hit_count("S:fast", "歩兵") == 4      # 4倍速 → 4回
+    assert hit_count("歩兵", "騎兵") == 1        # 既存駒どうしは常に1回
+    reset_config()
 
 
 def test_validate_genome_rejects_illegal_builds():
