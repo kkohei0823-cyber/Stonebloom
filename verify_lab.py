@@ -262,7 +262,10 @@ def cmd_calibrate(args):
               f"| HP×ATKは既存駒の 中央値{row['power_vs_core_median']:.2f}倍 最大{row['power_vs_core_max']:.2f}倍")
     checks = {
         "light_never_beats_core_neutral": all(results["classes"]["light"][k] == 0.0 for k in CORE_KINDS),
-        "middle_slightly_stronger": 1.0 <= results["classes"]["middle"]["power_vs_core_median"] <= 1.4,
+        # 中量級の基準ビルド(R/H/W)の平均が既存駒よりやや強い
+        "reference_builds_slightly_stronger": 1.0 <= sum(
+            st["hp"] * st["atk"] for st in results["reference_builds"].values()
+        ) / len(results["reference_builds"]) / 7200 <= 1.4,
     }
     results["checks"] = checks
     for k, v in checks.items():

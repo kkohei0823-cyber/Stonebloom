@@ -130,16 +130,24 @@ CONFIG = {
     },
 
     # Sprigling(Whittlewispの駒)のステータス算出（sprigling.derive_stats()参照）
-    #   総合力 HP×攻撃力 = power_per_rp × 動員コスト（移動力3なら × move3_power_mult）
+    #   総合力 HP×攻撃力 = power_per_rp × anchor × (動員コスト/anchor)^power_cost_exponent
+    #                      （移動力3なら × move3_power_mult）
     #   既存の苔兵/棘走/岩守はHP×攻撃力=7200、動員コスト400/500/400。power_per_rp=18は
     #   苔兵・岩守と同じ「RPあたりの強さ」、移動力3の割引0.8は棘走(7200/500=14.4)と同じ比率。
-    #   → 中量級上限(565RP)で既存駒の約1.4倍、R/H/W(約480-520RP)で約1.2-1.3倍、
-    #     軽量級上限(310RP)で約0.78倍（属性相性なしの1対1では既存駒に勝てない）。
+    #   → anchor(450RP)で既存駒の1.125倍、R/H/W(約410-510RP)で約0.95-1.4倍、
+    #     軽量級上限(310RP)で約0.53倍、重量級上限(1000RP)で約5.6倍。
     #   HPと攻撃力の配分（形）は部位ごとのWhittlewisp式で決める:
     #     shape = (攻撃力の生値 / 耐久の生値) / shape_ref_ratio  を [shape_min, shape_max] にクランプし、
     #     攻撃力/HP = ref_atk_hp_ratio × shape（shape=1で苔兵と同じ比率 36/200）。
     "sprigling_stats": {
         "power_per_rp": 18.0,
+        # 総合力を動員コストの何乗で伸ばすか（anchor RPでの値は power_per_rp×anchor で固定）。
+        #   power = power_per_rp × anchor × (動員コスト/anchor)^power_cost_exponent
+        # 1.0なら純粋な比例。1より大きいと安い駒ほど割高になる（数で押す戦術の抑制）。
+        # 2.0は verify_lab.py の実対局（階級別に既存5種のみの相手と400局）で決めた暫定値:
+        #   1.0だと軽量級込みの側が0.80で圧勝（安い駒の数押し）、2.0で軽量0.48/中量0.56/重量0.55。
+        "power_cost_exponent": 2.0,
+        "power_anchor_cost": 450,
         "move3_power_mult": 0.8,
         "ref_atk_hp_ratio": 0.18,
         "shape_ref_ratio": 0.115,   # R/H/Wの(攻撃力生値/耐久生値)の平均

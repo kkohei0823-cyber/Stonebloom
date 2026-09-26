@@ -8,9 +8,9 @@ Whittlewispのビルド（部位ごとの size/length/angle/本数/材質）か�
 算出の流れ（係数は全て CONFIG["sprigling_stats"] / CONFIG["sprigling_cost"]）:
   1. Whittlewispの Creature を実際に組み立てる（個体差ロールは seed で固定＝再現可能）
   2. 重量   = Creature.build_weight（Whittlewispの重量式そのまま）
-  3. 総合力 = HP×攻撃力 = power_per_rp × 動員コスト（移動力3なら割引）
-             → 強さは動員コスト（＝重量）に比例する。軽量級は既存駒より弱く、
-               中量級はやや強い（係数の根拠はconfig.pyのsprigling_statsのコメント）。
+  3. 総合力 = HP×攻撃力 = power_per_rp × anchor × (動員コスト/anchor)^power_cost_exponent
+             （移動力3なら割引）。強さは動員コスト（＝重量）の2乗で伸びる。比例（1乗）だと
+             安い軽量級を数で押す戦術が実対局で圧勝したため（config.pyのコメント参照）。
   4. 配分   = HPと攻撃力の比は、部位ごとのWhittlewisp式から決める:
                耐久の生値   = Σ 全部位インスタンスの耐久(compute_max_dur、材質係数込み)
                攻撃力の生値 = 最強部位の技威力 + atk_secondary_share × 他部位の技威力の合計
@@ -218,7 +218,9 @@ def derive_stats(genome, seed=0):
     move = max(1, min(3, move))
 
     # 総合力（HP×攻撃力）は動員コストで決まり、配分（形）は部位ごとの式で決まる
-    power = st["power_per_rp"] * produce_cost * (st["move3_power_mult"] if move == 3 else 1.0)
+    anchor = st["power_anchor_cost"]
+    power = (st["power_per_rp"] * anchor * (produce_cost / anchor) ** st["power_cost_exponent"]
+             * (st["move3_power_mult"] if move == 3 else 1.0))
     powers = raw["part_powers"]
     atk_raw = (powers[0] if powers else 0.0) + st["atk_secondary_share"] * sum(powers[1:])
     shape = (atk_raw / raw["durability"]) / st["shape_ref_ratio"]
