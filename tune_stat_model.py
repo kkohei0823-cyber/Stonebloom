@@ -70,10 +70,12 @@ def suggest(trial, model):
         "speed_mass_exp": trial.suggest_float("speed_mass_exp", 0.0, 1.5),
         "leg_speed_coef": trial.suggest_float("leg_speed_coef", 0.0, 0.3),
         "siege_mass_exp": trial.suggest_float("siege_mass_exp", 0.0, 1.0),
+        "class_step": trial.suggest_float("class_step", 0.0, 0.15),
     }
     multi = trial.suggest_categorical("multi_attack", [False, True])
     combat = {"multi_attack": multi, "initiative": False,
-              "siege": trial.suggest_categorical("siege", [False, True])}
+              "siege": trial.suggest_categorical("siege", [False, True]),
+              "guard_ratio": trial.suggest_float("guard_ratio", 0.0, 0.9)}
     if multi:
         combat["max_hits"] = trial.suggest_int("max_hits", 2, 4)
         combat["extra_hit_efficiency"] = trial.suggest_float("extra_hit_efficiency", 0.2, 1.0)
@@ -118,6 +120,8 @@ def main(argv=None):
     ap.add_argument("--storage")
     ap.add_argument("--study-name")
     ap.add_argument("--out", default="best_stat_model.json")
+    ap.add_argument("--warm-start", help="前回のbest_*.jsonのparamsを最初のtrialとして評価する")
+    ap.add_argument("--warm-extra", help="warm-startのparamsに追加・上書きする値(JSON)")
     args = ap.parse_args(argv)
 
     import optuna
@@ -142,6 +146,11 @@ def main(argv=None):
                                 study_name=args.study_name or f"sprigling_stat_{args.model}",
                                 storage=args.storage, load_if_exists=bool(args.storage),
                                 sampler=optuna.samplers.TPESampler(seed=0))
+    if args.warm_start:
+        with open(args.warm_start, encoding="utf-8") as f:
+            warm = dict(json.load(f)["params"])
+        warm.update(json.loads(args.warm_extra) if args.warm_extra else {})
+        study.enqueue_trial(warm, skip_if_exists=True)
     study.optimize(objective, n_trials=args.trials)
 
     best = study.best_trial
