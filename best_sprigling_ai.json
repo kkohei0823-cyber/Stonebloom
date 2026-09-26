@@ -1,5 +1,5 @@
 {
- "confirmed": true,
+ "confirmed": false,
  "overrides": null,
  "keys": [
   "hp_valuation_bonus",
@@ -16,102 +16,102 @@
   "unfavorable_matchup_penalty"
  ],
  "weights": {
-  "hp_valuation_bonus": 0.0,
-  "sprigling_affinity": 0.0,
-  "speed_edge_pref": 0.0,
-  "heavy_anchor_pref": 0.0,
-  "swarm_pref": 0.0,
-  "elite_pref": 0.0,
-  "efficiency": 2.27,
-  "attack": 0.83,
-  "kill_bonus": 24.0,
-  "production_diversity_pref": 9.28,
-  "favorable_matchup_bonus": 0.0,
-  "unfavorable_matchup_penalty": 0.0
+  "hp_valuation_bonus": 0.20849052717157718,
+  "sprigling_affinity": 0.007062629877955806,
+  "speed_edge_pref": 1.1969543093112553,
+  "heavy_anchor_pref": 6.306470780341959,
+  "swarm_pref": 1.282937979442342,
+  "elite_pref": 0.6213203339057257,
+  "efficiency": 2.3427710501314394,
+  "attack": 0.5298412827586543,
+  "kill_bonus": 39.51371379678219,
+  "production_diversity_pref": 18.17168419393358,
+  "favorable_matchup_bonus": 2.1110054129145546,
+  "unfavorable_matchup_penalty": 3.6636301344934123
  },
  "candidates": [
   {
-   "trial": 19,
-   "selection_score": 0.55,
-   "verdict": "NOT_BETTER",
+   "trial": 31,
+   "selection_score": 0.5375,
+   "verdict": "INCONCLUSIVE",
    "held_out": {
-    "pairs": 150,
-    "score": 0.47,
+    "pairs": 400,
+    "score": 0.5175,
     "ci95": [
-     0.4119,
-     0.5281
+     0.4839,
+     0.5511
     ],
-    "elo": -20.9
+    "elo": 12.2
    },
    "weights": {
-    "hp_valuation_bonus": 0.5541028751324778,
-    "sprigling_affinity": 1.3961742163688209,
-    "speed_edge_pref": 1.474084420734286,
-    "heavy_anchor_pref": 3.4424194445888685,
-    "swarm_pref": 0.5877221801815974,
-    "elite_pref": 0.9952863001523895,
-    "efficiency": 3.533267545361875,
-    "attack": 0.6157962459215112,
-    "kill_bonus": 17.780026317418084,
-    "production_diversity_pref": 5.865694876817917,
-    "favorable_matchup_bonus": 0.3329034202625716,
-    "unfavorable_matchup_penalty": 0.15642659451758537
+    "hp_valuation_bonus": 0.20849052717157718,
+    "sprigling_affinity": 0.007062629877955806,
+    "speed_edge_pref": 1.1969543093112553,
+    "heavy_anchor_pref": 6.306470780341959,
+    "swarm_pref": 1.282937979442342,
+    "elite_pref": 0.6213203339057257,
+    "efficiency": 2.3427710501314394,
+    "attack": 0.5298412827586543,
+    "kill_bonus": 39.51371379678219,
+    "production_diversity_pref": 18.17168419393358,
+    "favorable_matchup_bonus": 2.1110054129145546,
+    "unfavorable_matchup_penalty": 3.6636301344934123
    }
   },
   {
-   "trial": 20,
-   "selection_score": 0.5125,
+   "trial": 18,
+   "selection_score": 0.525,
    "verdict": "NOT_BETTER",
    "held_out": {
     "pairs": 100,
-    "score": 0.435,
+    "score": 0.4,
     "ci95": [
-     0.3631,
-     0.5069
+     0.3318,
+     0.4682
     ],
-    "elo": -45.4
+    "elo": -70.4
    },
    "weights": {
-    "hp_valuation_bonus": 0.32115688570580647,
-    "sprigling_affinity": 2.1376391939883645,
-    "speed_edge_pref": 3.0688823021001683,
-    "heavy_anchor_pref": 4.7669997976604215,
-    "swarm_pref": 0.6623472218976947,
-    "elite_pref": 1.1968743000696938,
-    "efficiency": 5.187133546993759,
-    "attack": 0.5527780055721058,
-    "kill_bonus": 29.08671682625596,
-    "production_diversity_pref": 9.017254544251042,
-    "favorable_matchup_bonus": 0.1275400587572461,
-    "unfavorable_matchup_penalty": 3.473715838678548
+    "hp_valuation_bonus": 0.18733876398395022,
+    "sprigling_affinity": 0.8316535362473281,
+    "speed_edge_pref": 0.7985266240534489,
+    "heavy_anchor_pref": 3.8032173920202093,
+    "swarm_pref": 1.0863424836540971,
+    "elite_pref": 0.09392318866930527,
+    "efficiency": 1.7966430162468765,
+    "attack": 0.5915382825234945,
+    "kill_bonus": 28.626902183638926,
+    "production_diversity_pref": 17.940255429749882,
+    "favorable_matchup_bonus": 0.39771623148105006,
+    "unfavorable_matchup_penalty": 5.393427937403699
    }
   },
   {
-   "trial": 0,
-   "selection_score": 0.5,
-   "verdict": "IMPROVED",
+   "trial": 35,
+   "selection_score": 0.525,
+   "verdict": "NOT_BETTER",
    "held_out": {
-    "pairs": 200,
-    "score": 0.5675,
+    "pairs": 100,
+    "score": 0.42,
     "ci95": [
-     0.518,
-     0.617
+     0.3551,
+     0.4849
     ],
-    "elo": 47.2
+    "elo": -56.1
    },
    "weights": {
-    "hp_valuation_bonus": 0.0,
-    "sprigling_affinity": 0.0,
-    "speed_edge_pref": 0.0,
-    "heavy_anchor_pref": 0.0,
-    "swarm_pref": 0.0,
-    "elite_pref": 0.0,
-    "efficiency": 2.27,
-    "attack": 0.83,
-    "kill_bonus": 24.0,
-    "production_diversity_pref": 9.28,
-    "favorable_matchup_bonus": 0.0,
-    "unfavorable_matchup_penalty": 0.0
+    "hp_valuation_bonus": 0.2214587125833617,
+    "sprigling_affinity": 0.33120106471136634,
+    "speed_edge_pref": 0.2150746763937501,
+    "heavy_anchor_pref": 3.429626598793593,
+    "swarm_pref": 1.0601052915704419,
+    "elite_pref": 0.4083325072630627,
+    "efficiency": 1.1208084944067649,
+    "attack": 0.34134717657295816,
+    "kill_bonus": 34.1753052074271,
+    "production_diversity_pref": 14.234727327859552,
+    "favorable_matchup_bonus": 0.7826307689092324,
+    "unfavorable_matchup_penalty": 2.2310713143775938
    }
   }
  ],
