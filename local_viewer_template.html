@@ -1,0 +1,1100 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>棋譜再生ビューアー</title>
+<style>
+  /* ----- 2026-09-06/09-07追加: play_vs_ai.htmlとの表示統一 -----
+     このビューアーは対局後の再生専用（クリック操作や「AI思考中」表示等、対局中
+     にしか意味を持たない要素は持たない）だが、盤面・持ち駒・フェーズ色分け・
+     現在のフェーズを示す回転ホイールの見た目・配色はplay_vs_ai.htmlと完全に
+     揃え、両方を触った際に迷わないようにする。CSSの値は play_vs_ai_template.html
+     から可能な限りそのまま持ち込んである。 */
+  :root {
+    --accent: #2E8B57;
+    --p0: #378ADD;
+    --p1: #EF9F27;
+    --p0-bg: #E6F1FB;
+    --p1-bg: #FAEEDA;
+    /* 2026-09-07修正: 生産(production)を表す色が後手(--p1)の橙と紛らわしい
+       という指摘を受け、黄色系(#eab308)から紫系(violet)へ変更。
+       play_vs_ai_template.htmlと共通の値。
+       2026-09-07再修正(2回目): 戦闘解決フェーズ用の色を追加（詳細は
+       play_vs_ai_template.htmlの:root直上コメント参照）。 */
+    --place-color: #16a34a;
+    --prod-color: #7c3aed;
+    --prod-bg: #f5f3ff;
+    --combat-color: #dc2626;
+    --combat-bg: #fef2f2;
+  }
+  body { font-family: -apple-system, "Hiragino Sans", "Yu Gothic", sans-serif; background:#f5f4f0; color:#222; margin:0; padding:24px; }
+  h1 { font-size:18px; font-weight:600; margin:0 0 16px; }
+  /* 2026-09-07修正: 「現在のフェーズ」表示を右カラム上部から、この.tabsと
+     同じ段（画面左側の「棋譜ファイルを読み込む」ボタンの下の段）へ移設した。
+     .topRowで試合タブと横並びにするため、.tabs自身のmargin-bottomは0にし、
+     段全体の余白は.topRow側で持たせる。 */
+  .tabs { display:flex; gap:8px; flex-wrap:wrap; }
+  .topRow { display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom:16px; }
+  button { font-family:inherit; font-size:14px; padding:8px 14px; border-radius:8px; border:1px solid #ccc; background:#fff; cursor:pointer; }
+  button:hover { background:#eee; }
+  button.active { border-color:#378ADD; color:#185FA5; font-weight:600; }
+  /* 2026-09-08追加: 「対局画面へ戻る」リンク。button要素と見た目を揃える
+     （<a>にはbutton{}のCSSが適用されないため専用クラスを用意する）。 */
+  a.backLink { font-family:inherit; font-size:14px; padding:8px 14px; border-radius:8px; border:1px solid #ccc; background:#fff; cursor:pointer; text-decoration:none; color:#222; display:inline-flex; align-items:center; gap:4px; }
+  a.backLink:hover { background:#eee; }
+  .layout { display:flex; gap:16px; flex-wrap:wrap; align-items:flex-start; }
+  /* 2026-09-08追加: 試合データが1件もない状態（対局前・itch.io向け配布パッケージに
+     同梱した場合など）の案内表示。 */
+  .emptyState { background:#fff; border-radius:8px; padding:20px; border:1px solid #e5e3da; color:#666; font-size:13.5px; line-height:1.8; max-width:520px; }
+  /* 2026-09-12追加: 選択中の試合の最終結果バー（投了で終わったかどうかも含む）。 */
+  .resultBar { background:#fff; border:1px solid #e5e3da; border-left:4px solid var(--accent); border-radius:8px; padding:8px 14px; margin-bottom:12px; font-size:13px; color:#333; }
+  .resultBar.resigned { border-left-color:#c0392b; }
+
+  /* ----- 盤面（play_vs_ai_template.htmlの#boardWrap/#boardGridOuterと同一） ----- */
+  #boardWrap { position:relative; }
+  /* 2026-09-07修正: width/heightを明示指定（22px+48px*9+gap2px*9=472px）。
+     指定しないと、#boardWrapはdisplay:grid以前に幅autoの通常のブロック要素
+     として扱われ、兄弟要素の.controls（stepLabelの文言がラウンド数や
+     手番によって長さが変わる）の都合でこの要素自身の幅が広がることがあり、
+     その結果グリッドの列指定（22px repeat(9,48px)）自体は変わらなくても、
+     この要素にかけている枠線(outline)だけが伸び縮みして見えていた
+     （「再生ボタンを押すと盤面の枠の大きさが変わる」不具合の実際の原因）。
+     固定することで、現在のフェーズを示す枠色が常に同じ大きさで表示される。 */
+  #boardGridOuter { display:grid; grid-template-columns: 22px repeat(9,48px); grid-template-rows: 22px repeat(9,48px); gap:2px; width:472px; height:472px; }
+  .axisLabel { display:flex; align-items:center; justify-content:center; font-size:11px; color:#999; }
+  .cell { position:relative; display:flex; align-items:center; justify-content:center; font-size:12px; background:#f8f7f2; border-radius:4px; }
+  .cell.star { background:#eef0e6; }
+  .cell.tengen { background:#eef0e6; border:1px solid #999; }
+  .cell.econ { background:#eef7ff; }
+  .cell.midgame { background:#fff4e0; border:2px solid #d99a2b; box-shadow: inset 0 0 0 1px #fff4e0; }
+  .cell.midgame-inactive {
+    background:repeating-linear-gradient(45deg, #f3f0e8, #f3f0e8 4px, #e9e4d6 4px, #e9e4d6 8px);
+    border:1px dashed #b8ab8a;
+  }
+  .piece { width:38px; height:38px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:600; font-size:15px; }
+  .hpbar { position:absolute; bottom:2px; left:5px; right:5px; height:3px; background:#ddd; border-radius:2px; overflow:hidden; }
+  .hpbar-inner { height:100%; }
+
+  .controls { display:flex; align-items:center; gap:8px; margin-top:12px; }
+  input[type=range] { flex:1; }
+  .side { min-width:300px; flex:1; }
+  .statcard { background:#fff; border-radius:8px; padding:12px; flex:1; border:1px solid #e5e3da; }
+  .statcard.p0 { border-color: var(--p0); }
+  .statcard.p1 { border-color: var(--p1); }
+  .statrow { display:flex; gap:12px; margin-bottom:12px; }
+  .logbox { background:#fff; border-radius:8px; padding:12px; border:1px solid #e5e3da; font-size:13px; line-height:1.7; margin-bottom:12px; }
+  .muted { color:#888; }
+  .label { font-size:12px; color:#888; margin:0 0 4px; }
+  .bignum { font-size:20px; font-weight:600; margin:0; }
+  .stepbadge { display:inline-block; font-size:11px; font-weight:600; padding:2px 8px; border-radius:10px; margin-right:6px; }
+  .stepbadge.turn0 { background:#E6F1FB; color:#185FA5; }
+  .stepbadge.turn1 { background:#FAEEDA; color:#9A5B0A; }
+  .candrow { display:flex; justify-content:space-between; gap:8px; padding:3px 0; border-bottom:1px dashed #eee; font-size:12px; }
+  .candrow:last-child { border-bottom:none; }
+  .candrow.chosen { background:#fff8e1; font-weight:600; border-radius:4px; padding-left:4px; }
+  .candval { font-variant-numeric:tabular-nums; color:#666; min-width:52px; text-align:right; }
+  .randomnote { font-size:12px; color:#b9770e; margin-top:6px; }
+
+  /* ----- フェーズ色分け・回転ホイール（play_vs_ai_template.htmlと同一設計） -----
+     8つの点が45度間隔、緑(配置。先手用2つ・後手用2つ)/紫(共同生産。2つ)/
+     赤(戦闘解決。2つ、2026-09-07新設)、青(先手)/橙(後手)半円の背景の上に乗る。
+     点の角度は22.5度ずらしてある（play_vs_ai_template.htmlの#wheelDisc直上の
+     コメント参照。ずらさないと2点がちょうど青/橙の境界線上に乗ってしまう
+     ため）。回転角=45*wheelStep+22.5(度)、wheelStepは1ラウンドにつき
+     「先手配置→後手配置→戦闘解決→共同生産」の4段階それぞれの切替タイミングで
+     +1される（先手/後手それぞれの配置は別の点を指すため、個々の手番でも
+     進む。詳細はbuildSteps()直上のコメント参照）。
+     2026-09-07修正:
+       ・黄(生産)が後手を表す橙と紛らわしかったため紫(--prod-color)に変更。
+       ・点の色の割り当てと回転オフセットをplay_vs_ai_template.htmlと
+         同じ規則に修正（詳細はそちらのSVG/updateTurnWheel()直上コメント参照）。
+       ・「現在のフェーズ」表示自体を右カラム上部から画面左側の.topRow
+         （「棋譜ファイルを読み込む」の下、試合タブと同じ段）へ移設した。
+       ・クラス名をplay_vs_ai_template.htmlと揃えるため turnPhase/prodPhase
+         を phasePlacement/phaseProduction にリネームした。
+     2026-09-07再修正(2回目): 円上の点の配置と実際のプレイ順が一致していない
+     という指摘を受け、tune_balance_search.py/game.py/web_api.pyを確認した
+     うえで正しい4段階モデル（上記）に作り直した。あわせて、独立していた
+     「戦闘解決」コマは今回廃止せず維持し（このコマの表示専用に戦闘結果を
+     見せる）、逆に一度分離した「生産」コマは先手・後手同時解決という
+     確認が取れたため1コマに統合し直した（buildSteps()参照）。 */
+  .phaseBadge { display:inline-block; font-size:11.5px; font-weight:700; padding:3px 10px; border-radius:999px; letter-spacing:0.02em; }
+  .phaseBadge.phasePlacement { background:var(--place-color); color:#fff; }
+  .phaseBadge.phaseProduction { background:var(--prod-color); color:#fff; }
+  .phaseBadge.phaseCombat { background:var(--combat-color); color:#fff; }
+  #boardWrap.phasePlacement #boardGridOuter { outline:3px solid var(--place-color); outline-offset:4px; }
+  #boardWrap.phaseProduction #boardGridOuter { outline:3px solid var(--prod-color); outline-offset:4px; }
+  #boardWrap.phaseCombat #boardGridOuter { outline:3px solid var(--combat-color); outline-offset:4px; }
+  #wheelPanel h2 { margin:0 0 1px; font-size:13px; color:#555; }
+  #wheelRound { font-weight:400; color:#999; font-size:11px; }
+  #wheelRow { display:flex; align-items:center; gap:10px; }
+  #wheelSvg { width:58px; height:68px; }
+  #wheelDisc { transition: transform 0.4s ease; transform-origin: 60px 80px; }
+  .wheelDot { stroke:#fff; stroke-width:2; }
+  .wheelDot.turnDot { fill:var(--place-color); }
+  .wheelDot.prodDot { fill:var(--prod-color); }
+  .wheelDot.combatDot { fill:var(--combat-color); }
+
+  /* 持ち駒パネル（play_vs_ai_template.htmlの生産選択パネルと同じ見た目。閲覧専用のため
+     常時readonly＝クリック不可・ホバー演出なし） */
+  .reserveRow { display:flex; flex-wrap:wrap; gap:6px; }
+  .reserveCard { font-size:12px; padding:8px 10px; border-radius:8px; border:1.5px solid #ddd; background:#fafafa; line-height:1.5; }
+  .reserveCard .kindName { font-weight:600; }
+  .reserveCard .kindStats { color:#999; font-size:10px; }
+  .producedNote { font-size:12px; margin-top:6px; }
+</style>
+</head>
+<body>
+<h1 id="viewerH1">棋譜再生ビューアー（オフライン版・1手ごと再生）</h1>
+<!-- 2026-09-06追加: 「棋譜をダウンロードし、同じフォルダに置いてブラウザを更新しても
+     読み込まれない」という報告への対応。このファイル自体はbuild_tools.pyが埋め込んだ
+     __DATA__（ビルド時点の1試合分）を表示するだけの完全な静的HTMLで、フォルダに
+     置いただけのファイルを実行時に自動で拾いに行く仕組みは元々無い（原因は棋譜の
+     ファイル名の付け方の違いではなく、この構造そのもの）。再ビルドせずにダウンロード
+     した棋譜をその場で開けるよう、ここでファイルを選んで読み込むボタンを追加した。 -->
+<div class="loadRow" style="margin-bottom:12px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+  <!-- 2026-09-08追加: play_vs_ai.html（対局画面）へ戻るリンク。build_tools.py側の
+       GAME_HTML_HREFマーカーでhrefを差し替える（通常配布時は"play_vs_ai.html"、
+       itch.io向けパッケージ時は同梱するゲーム側ファイル名"index.html"）。 -->
+  <a class="backLink" id="backLink" href="play_vs_ai.html">⬅ <span id="backLinkLabel">対局画面へ戻る</span></a>
+  <button id="loadKifuBtn">📂 <span id="loadKifuBtnLabel">棋譜ファイルを読み込む（kifu_data_*.json）</span></button>
+  <input type="file" id="loadKifuInput" accept="application/json,.json" style="display:none;">
+  <span id="loadKifuStatus" style="font-size:12px;color:#888;"></span>
+</div>
+<!-- 2026-09-07修正: 「現在のフェーズ」表示（旧#wheelPanel、旧・右カラム上部）を
+     ここ（「棋譜ファイルを読み込む」ボタンの下、試合タブと同じ段）へ移設した。
+     play_vs_ai_template.htmlの盤面表示（枠色で現在のフェーズを示す）と表示方法を
+     揃えるための移動で、右カラム側は詰めた分だけ上に上がる。 -->
+<div class="topRow" id="topRow">
+  <div class="tabs" id="tabs"></div>
+  <div id="wheelPanel">
+    <div id="wheelRow">
+      <span id="phaseBadge" class="phaseBadge phasePlacement">配置</span>
+      <div>
+        <h2><span id="wheelTitleLabel">現在のフェーズ</span><span id="wheelRound"></span></h2>
+        <svg id="wheelSvg" viewBox="0 0 120 140">
+          <polygon points="50,18 70,18 60,35" fill="#555"></polygon>
+          <g id="wheelDisc">
+            <path d="M28.18,48.18 A45,45 0 0,1 91.82,111.82 Z" fill="#378ADD"></path>
+            <path d="M91.82,111.82 A45,45 0 0,1 28.18,48.18 Z" fill="#EF9F27"></path>
+            <circle cx="60" cy="80" r="45" fill="none" stroke="#00000022" stroke-width="1.5"></circle>
+            <circle class="wheelDot prodDot" cx="77.22" cy="38.43" r="5" title="共同生産フェーズ"></circle>
+            <circle class="wheelDot combatDot" cx="101.57" cy="62.78" r="5" title="戦闘解決フェーズ"></circle>
+            <circle class="wheelDot turnDot" cx="101.57" cy="97.22" r="5" title="配置フェーズ"></circle>
+            <circle class="wheelDot turnDot" cx="77.22" cy="121.57" r="5" title="配置フェーズ"></circle>
+            <circle class="wheelDot prodDot" cx="42.78" cy="121.57" r="5" title="共同生産フェーズ"></circle>
+            <circle class="wheelDot combatDot" cx="18.43" cy="97.22" r="5" title="戦闘解決フェーズ"></circle>
+            <circle class="wheelDot turnDot" cx="18.43" cy="62.78" r="5" title="配置フェーズ"></circle>
+            <circle class="wheelDot turnDot" cx="42.78" cy="38.43" r="5" title="配置フェーズ"></circle>
+          </g>
+          </svg>
+        </div>
+      </div>
+    </div>
+  </div>
+<!-- 2026-09-12追加: 選択中の試合の最終結果（勝者・決着理由）を常時表示する
+     バー。投了で終わった対局かどうかもここで分かるようにする（棋譜再生だけでは
+     「最後のコマまで進めないと決着理由が分からない」ため、常設表示にした）。 -->
+<div id="resultBar" class="resultBar" style="display:none;"></div>
+<!-- 2026-09-08追加: 試合データが1件もない場合（itch.io配布パッケージへ同梱した
+     直後や、対局をまだ1度もダウンロードしていない状態）の案内。selectGame()が
+     GAMES.length===0を検出するとこちらを表示し、.layout（盤面側）は隠す。 -->
+<div id="emptyState" class="emptyState" style="display:none;">
+  <p><b id="emptyStateTitle"></b></p>
+  <p id="emptyStateBody"></p>
+</div>
+<div class="layout" id="mainLayout">
+  <div id="boardWrap">
+    <div id="boardGridOuter"></div>
+    <div class="controls">
+      <button onclick="stepStep(-1)">&larr;</button>
+      <button id="playBtn" onclick="togglePlay()">再生</button>
+      <button onclick="stepStep(1)">&rarr;</button>
+      <input type="range" id="stepSlider" min="0" max="0" value="0" step="1" oninput="setStep(parseInt(this.value))">
+      <span id="stepLabel" style="font-size:13px;color:#666;min-width:170px;">ラウンド 1</span>
+    </div>
+  </div>
+  <div class="side">
+    <div class="statrow">
+      <div class="statcard p0">
+        <p class="label" id="sideLabel0">player0 (青)</p>
+        <p class="bignum" id="rp0">RP 0</p>
+        <p class="label" id="vp0">VP -</p>
+      </div>
+      <div class="statcard p1">
+        <p class="label" id="sideLabel1">player1 (橙)</p>
+        <p class="bignum" id="rp1">RP 0</p>
+        <p class="label" id="vp1">VP -</p>
+      </div>
+    </div>
+    <div class="logbox">
+      <p class="label" id="actionsLogTitle">このターンの手</p>
+      <div id="actionsLog"></div>
+    </div>
+    <!-- 2026-08-15追加: 持ち駒（reserve）表示。play_vs_ai.html側で既に対応済みの
+         「AI/相手の持ち駒が画面のどこにも見えず、生産が異常でないか確認できない」
+         問題を、main.py→local_viewer.html経由の棋譜レビューでも解消するため。
+         対局ではなく再生ビューアーなので双方とも同じ見た目（閲覧専用）で表示する。 -->
+    <div class="logbox">
+      <p class="label" id="reserveLogTitle">持ち駒（このターン時点）</p>
+      <div id="reserveLog"></div>
+    </div>
+    <!-- 2026-08-09追加: AI候補ログ。常時表示（チェックボックス等の切替は無し）。 -->
+    <div class="logbox">
+      <p class="label" id="candidatesLogTitle">AI候補ログ（このターンの意思決定）</p>
+      <div id="candidatesLog"></div>
+    </div>
+    <div class="logbox">
+      <p class="label" id="deathsLogTitle">このラウンドの戦闘結果</p>
+      <div id="deathsLog"></div>
+    </div>
+  </div>
+</div>
+<script>
+// 2026-09-08追加: play_vs_ai_template.htmlと同じ仕組みで、build_tools.pyが
+// このマーカー部分をJSON.dumpsした値で置換する（英語版local_viewer.htmlを
+// 生成できるようにするため）。テンプレート単体で開いた場合の既定値はja。
+var BUILD_OPTIONS = /*@@BUILD_OPTIONS@@*/{"locale": "ja"};
+// 2026-09-08追加: 「対局画面へ戻る」リンクの遷移先。通常配布時はplay_vs_ai.html、
+// itch.io向けパッケージ時はindex.html（同梱するゲーム側の出力ファイル名）に
+// build_tools.pyが差し替える。
+var GAME_HTML_HREF = /*@@GAME_HTML_HREF@@*/"play_vs_ai.html";
+
+/* @@KIFU_DATA_START@@ */
+const GAMES = __DATA__;
+/* @@KIFU_DATA_END@@ */
+
+// 2026-09-12追加: play_vs_ai.html（itch.io配布時はindex.html）側は、対局終了時に
+// この試合の棋譜をlocalStorageにも自動保存するようになった（itch.io配布時、
+// サンドボックス化されたiframe環境ではファイルダウンロード自体がうまく
+// 機能せず、「ダウンロード→このビューアーの『棋譜ファイルを読み込む』から
+// 読み込む」という手順が事実上詰んでしまう＝このビューアーを開いても常に
+// 「まだ試合データがありません」のまま、という報告への対応）。
+// index.html/play_vs_ai.htmlとlocal_viewer.htmlはitch.io配布時も同じ
+// フォルダに同梱される同一オリジンのファイルなので、localStorageは
+// 両者で共有できる。ここでは起動時にそのキーを読み、ビルド時点で埋め込まれた
+// 試合一覧(GAMES、itch.io配布パッケージでは通常空)に追加する。
+// これにより、対局後にファイルを一切ダウンロードしなくても「対局画面へ戻る」
+// →「棋譜ビューアーを開く」だけで直前の対局を振り返れるようになる
+// （ダウンロード＋「棋譜ファイルを読み込む」は、別のブラウザ・別の端末で
+// 見る場合や、対局データを人に渡す場合の手段として引き続き使える）。
+const KIFU_STORAGE_KEY = "kifuRecords_v1";
+function loadKifuRecordsFromStorage(){
+  try {
+    const raw = localStorage.getItem(KIFU_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter(g => g && Array.isArray(g.kifu)) : [];
+  } catch (e){
+    console.error("[kifu] failed to read match records from localStorage:", e);
+    return [];
+  }
+}
+loadKifuRecordsFromStorage().forEach(g => GAMES.push(g));
+
+// 2026-09-08追加: play_vs_ai_template.htmlのPIECE_DISPLAYと同じ対応表
+// （3.2/4.2節の呼称表）。config.py/game.pyの内部キー名は変更しない。
+const PIECE_DISPLAY = {
+  ja: {
+    "歩兵": {full: "苔兵（こけへい）", short: "苔"},
+    "騎兵": {full: "棘走（とげばしり）", short: "棘"},
+    "重装兵": {full: "岩守（いわもり）", short: "岩"},
+    "弓兵": {full: "毒舞（どくまい）", short: "毒"},
+    "工兵": {full: "根張（ねばり）", short: "根"},
+    "本拠": {full: "母岩（ぼがん）", short: "母"},
+  },
+  en: {
+    "歩兵": {full: "Mosskin", short: "Mk"},
+    "騎兵": {full: "Thornrunner", short: "Th"},
+    "重装兵": {full: "Stoneguard", short: "Sg"},
+    "弓兵": {full: "Venomspore", short: "Vs"},
+    "工兵": {full: "Rootbound", short: "Rb"},
+    "本拠": {full: "Motherstone", short: "Ms"},
+  },
+};
+function pieceLabel(kind){
+  const table = PIECE_DISPLAY[BUILD_OPTIONS.locale] || PIECE_DISPLAY.ja;
+  return (table[kind] || {full: kind}).full;
+}
+function pieceShort(kind){
+  const table = PIECE_DISPLAY[BUILD_OPTIONS.locale] || PIECE_DISPLAY.ja;
+  return (table[kind] || {short: "?"}).short;
+}
+// 2026-09-08追加: play_vs_ai_template.htmlのcostLabel()と同じ考え方
+// （全角括弧は英語ビルドだと見た目が浮くため、ロケールに応じて切り替える）。
+function costLabel(cost){
+  return BUILD_OPTIONS.locale === "en" ? ` (${cost}RP)` : `（${cost}RP）`;
+}
+
+// 2026-09-08追加: play_vs_ai_template.htmlと同型のUI文言対応表（ja/en）。
+const UI_STRINGS = {
+  ja: {
+    pageTitle: "棋譜再生ビューアー", h1: "棋譜再生ビューアー（オフライン版・1手ごと再生）",
+    backLink: "対局画面へ戻る", loadKifuBtn: "棋譜ファイルを読み込む（kifu_data_*.json）",
+    tabLabel: (i) => `試合${i}`,
+    tabResignedSuffix: "（投了）",
+    // 2026-09-12追加: 選択中の試合の結果バー。
+    resultWinner: (label, seat) => `勝者: ${label}（${seat}）`,
+    resultDraw: "引き分け",
+    resultInProgress: "（この棋譜には決着情報がありません。旧形式の棋譜か、対局途中のデータの可能性があります）",
+    winReasons: {
+      base_destroyed: "本拠が撃破されました", vp_score: "累積VPで決着",
+      base_hp_tiebreak: "本拠残りHPでタイブレーク", total_hp_tiebreak: "盤上の合計HPでタイブレーク",
+      second_player_default: "同点のため後手勝利",
+      resigned: (label) => `${label} の投了により決着`,
+    },
+    wheelTitle: "現在のフェーズ", wheelRoundLabel: (r) => `（ラウンド ${r}）`,
+    phasePlacement: "配置", phaseCombat: "戦闘解決", phaseProduction: "共同生産（アップキープ）",
+    wheelDotPlacement: "配置フェーズ", wheelDotCombat: "戦闘解決フェーズ", wheelDotProduction: "共同生産フェーズ",
+    playBtnPlay: "再生", playBtnPause: "一時停止",
+    p0suffix: " (青)", p1suffix: " (橙)",
+    actionsLogTitle: "このターンの手", reserveLogTitle: "持ち駒（このターン時点）",
+    candidatesLogTitle: "AI候補ログ（このターンの意思決定）", deathsLogTitle: "このラウンドの戦闘結果",
+    reserveNone: "（なし）", reserveNoData: "持ち駒データなし（旧形式の棋譜）",
+    moveLabel: "移動", rangeLabel: "射程", listSeparator: "、",
+    seatFirst: "先攻", seatSecond: "後攻",
+    actionPlace: (kind, pos) => `配置 ${kind} → ${pos}`,
+    actionMove: (src, dst) => `移動 ${src} → ${dst}`,
+    actionPass: "パス",
+    stepLabelTurn: (round, total, seat, label) => `ラウンド ${round} / ${total} ・ ${seat}(${label})の手`,
+    stepLabelLegacy: (round, total) => `ラウンド ${round} / ${total} ・ 手番（旧形式棋譜）`,
+    stepLabelCombat: (round, total) => `ラウンド ${round} / ${total} ・ 戦闘解決`,
+    stepLabelProduction: (round, total) => `ラウンド ${round} / ${total} ・ 共同生産（アップキープ）`,
+    turnActionsTitle: (label) => `${label}のこのターンの手`,
+    legacyActionsTitle: "このターンの手",
+    combatActionsTitle: "戦闘解決",
+    combatNotice: "両者の手が出そろい、戦闘が解決されました（結果は下の「戦闘結果」欄）。",
+    productionActionsTitle: "共同生産（アップキープ）",
+    producedLine: (label, kind, cost) => `${label}: ${kind} を生産${cost}`,
+    producedCostSuffix: (cost) => `（${cost}RP消費）`,
+    producedNone: (label) => `${label}: 生産なし`,
+    candidatesNone: "候補ログなし（choose_with_debug() 非対応のボットの手、または pass のみ）",
+    candidatesLegacyNone: "（旧形式棋譜のため候補ログはありません）",
+    candidatesCombatNone: "（戦闘解決フェーズ。候補手ログはありません）",
+    candidatesProductionNone: "（共同生産フェーズ。候補手ログはありません）",
+    randomPickNote: "※ このターンはε(探索の代わりにランダム選択)が発動しています。実際に選ばれた手が候補の最上位と一致しないことがあります。",
+    deathsPlaceholder: "戦闘結果は「戦闘解決」のコマでのみ表示されます（スライダーを進めて確認してください）",
+    deathsNone: (round) => `被害なし（ラウンド${round}）`,
+    deathsRoundHeader: (round) => `ラウンド${round}の戦闘結果:`,
+    deathsDamageLabel: "ダメージ: ",
+    deathsKillLine: (label, kind, pos) => `${label} の ${kind} が ${pos} で撃破`,
+    rpWastedWarning: (round, label0, val0, label1, val1) =>
+      `※ ラウンド${round}、RP上限(rp_cap)超過で切り捨てられた収入: ${label0}=${val0} / ${label1}=${val1}` +
+      `（＝持ち駒を残したまま生産しなかった分の収入が無駄になっています）`,
+    loadJsonError: (msg) => `読み込み失敗: JSONとして解釈できませんでした（${msg}）`,
+    loadFormatError: "読み込み失敗: kifu_data_*.json / play_vs_aiの「棋譜をダウンロード」と同じ形式のファイルではないようです（kifuフィールドが見つかりません）。",
+    loadReadError: "読み込み失敗: ファイルを読めませんでした。",
+    loadSuccess: (filename, start, end) => `読み込み完了: ${filename}（試合${start}〜${end}として追加）`,
+    emptyStateTitle: "まだ試合データがありません",
+    // 2026-09-12修正: 対局終了時の棋譜自動保存(localStorage)に対応したため、
+    // 「対局を終えればこの画面は自動的に埋まる」ことを案内文言でも明示する。
+    emptyStateBody: "対局を1局終えると、次にこのページを開いたときに自動的に表示されます。まだ対局を終えていない場合は、上の「対局画面へ戻る」からプレイしてください。他のブラウザ・端末で対局した棋譜を見たい場合は、「棋譜ファイルを読み込む」から手元のkifu_data_*.jsonファイルを選ぶこともできます。",
+  },
+  en: {
+    pageTitle: "Match Replay Viewer", h1: "Match Replay Viewer (offline, step-by-step)",
+    backLink: "Back to Game", loadKifuBtn: "Load a game record file (kifu_data_*.json)",
+    tabLabel: (i) => `Match ${i}`,
+    tabResignedSuffix: " (resigned)",
+    // 2026-09-12 added: result bar for the selected match.
+    resultWinner: (label, seat) => `Winner: ${label} (${seat})`,
+    resultDraw: "Draw",
+    resultInProgress: "(No result data in this game record — it may be a legacy-format record or an in-progress match.)",
+    winReasons: {
+      base_destroyed: "Motherstone destroyed", vp_score: "Decided by accumulated VP",
+      base_hp_tiebreak: "Tiebreak: remaining Motherstone HP", total_hp_tiebreak: "Tiebreak: total HP on board",
+      second_player_default: "Tie — 2nd player wins",
+      resigned: (label) => `Decided by ${label}'s resignation`,
+    },
+    wheelTitle: "Current phase", wheelRoundLabel: (r) => `(Round ${r})`,
+    phasePlacement: "Placement", phaseCombat: "Combat Resolution", phaseProduction: "Joint Production (Upkeep)",
+    wheelDotPlacement: "Placement phase", wheelDotCombat: "Combat resolution phase", wheelDotProduction: "Joint production phase",
+    playBtnPlay: "Play", playBtnPause: "Pause",
+    p0suffix: " (Blue)", p1suffix: " (Orange)",
+    actionsLogTitle: "This Turn's Move", reserveLogTitle: "Reserve (at this point)",
+    candidatesLogTitle: "AI Candidate Log (this turn's decision)", deathsLogTitle: "This Round's Combat Results",
+    reserveNone: "(none)", reserveNoData: "No reserve data (legacy game record format).",
+    moveLabel: "Move", rangeLabel: "Range", listSeparator: ", ",
+    seatFirst: "1st", seatSecond: "2nd",
+    actionPlace: (kind, pos) => `Place ${kind} → ${pos}`,
+    actionMove: (src, dst) => `Move ${src} → ${dst}`,
+    actionPass: "Pass",
+    stepLabelTurn: (round, total, seat, label) => `Round ${round} / ${total} - ${seat} (${label})'s move`,
+    stepLabelLegacy: (round, total) => `Round ${round} / ${total} - move (legacy game record)`,
+    stepLabelCombat: (round, total) => `Round ${round} / ${total} - Combat resolution`,
+    stepLabelProduction: (round, total) => `Round ${round} / ${total} - Joint production (upkeep)`,
+    turnActionsTitle: (label) => `${label}'s move this turn`,
+    legacyActionsTitle: "This turn's move",
+    combatActionsTitle: "Combat resolution",
+    combatNotice: "Both sides have acted and combat has resolved (see the Combat Results panel below).",
+    productionActionsTitle: "Joint production (upkeep)",
+    producedLine: (label, kind, cost) => `${label}: produced ${kind}${cost}`,
+    producedCostSuffix: (cost) => ` (spent ${cost} RP)`,
+    producedNone: (label) => `${label}: no production`,
+    candidatesNone: "No candidate log (this bot doesn't support choose_with_debug(), or the move was a pass).",
+    candidatesLegacyNone: "(No candidate log — legacy game record format.)",
+    candidatesCombatNone: "(Combat resolution phase — no candidate move log.)",
+    candidatesProductionNone: "(Joint production phase — no candidate move log.)",
+    randomPickNote: "* This turn used ε (a random pick instead of search). The move actually chosen may not match the top candidate.",
+    deathsPlaceholder: "Combat results are only shown on the “Combat Resolution” step (advance the slider to see them).",
+    deathsNone: (round) => `No losses (Round ${round}).`,
+    deathsRoundHeader: (round) => `Round ${round} combat results:`,
+    deathsDamageLabel: "Damage: ",
+    deathsKillLine: (label, kind, pos) => `${label}'s ${kind} was destroyed at ${pos}`,
+    rpWastedWarning: (round, label0, val0, label1, val1) =>
+      `* Round ${round}: income lost to the RP cap (rp_cap): ${label0}=${val0} / ${label1}=${val1}` +
+      ` (RP that went to waste because production wasn't spent while it was over the cap).`,
+    loadJsonError: (msg) => `Load failed: couldn't parse this as JSON (${msg}).`,
+    loadFormatError: "Load failed: this doesn't look like a kifu_data_*.json / play_vs_ai.html “Download Game Record” file (no “kifu” field found).",
+    loadReadError: "Load failed: couldn't read the file.",
+    loadSuccess: (filename, start, end) => `Loaded: ${filename} (added as match ${start}–${end})`,
+    emptyStateTitle: "No match data yet",
+    // 2026-09-12 updated: matches are now auto-saved to local storage when a
+    // game ends, so mention that this page fills in automatically.
+    emptyStateBody: "Finish a match and it will show up here automatically the next time you open this page. If you haven't finished one yet, use “Back to Game” above to play. To view a match played on another browser or device, you can still load its kifu_data_*.json file with “Load a game record file”.",
+  },
+};
+function t(key){
+  const table = UI_STRINGS[BUILD_OPTIONS.locale] || UI_STRINGS.ja;
+  return (key in table) ? table[key] : (UI_STRINGS.ja[key] !== undefined ? UI_STRINGS.ja[key] : key);
+}
+
+function applyLocaleStaticText(){
+  document.title = t("pageTitle");
+  document.getElementById("viewerH1").textContent = t("h1");
+  document.getElementById("backLink").setAttribute("href", GAME_HTML_HREF);
+  document.getElementById("backLinkLabel").textContent = t("backLink");
+  document.getElementById("loadKifuBtnLabel").textContent = t("loadKifuBtn");
+  document.getElementById("wheelTitleLabel").textContent = t("wheelTitle");
+  document.getElementById("actionsLogTitle").textContent = t("actionsLogTitle");
+  document.getElementById("reserveLogTitle").textContent = t("reserveLogTitle");
+  document.getElementById("candidatesLogTitle").textContent = t("candidatesLogTitle");
+  document.getElementById("deathsLogTitle").textContent = t("deathsLogTitle");
+  document.getElementById("playBtn").textContent = t("playBtnPlay");
+  document.querySelectorAll(".wheelDot.prodDot").forEach(el => el.setAttribute("title", t("wheelDotProduction")));
+  document.querySelectorAll(".wheelDot.combatDot").forEach(el => el.setAttribute("title", t("wheelDotCombat")));
+  document.querySelectorAll(".wheelDot.turnDot").forEach(el => el.setAttribute("title", t("wheelDotPlacement")));
+}
+
+const OWNER_COLOR = ["#378ADD", "#EF9F27"];
+const OWNER_BG = ["#E6F1FB", "#FAEEDA"];
+let curGame = 0, curStep = 0, playing = false, timer = null;
+let STEPS = []; // buildSteps()の結果をキャッシュ（試合切り替え時に作り直す）
+
+function cellKey(x,y){ return x+","+y; }
+
+// 2026-09-02追加: player0/player1という座席名の決め打ち表示をやめ、
+// generate_kifu.pyが棋譜JSONに埋め込むbot0_label/bot1_label
+// （例: "gen_0000"）を表示に使う。先後の区別自体は既存の
+// 「先攻/後攻」表記で別途行っているため、ここは「どちらの重み設定か」
+// だけを示す。旧形式棋譜（bot0_label/bot1_labelを持たない）を開いても
+// エラーにならないよう、無ければ従来通り"player0"/"player1"にフォールバックする。
+function sideLabel(pl){
+  const g = GAMES[curGame];
+  const label = g && g["bot" + pl + "_label"];
+  return label || ("player" + pl);
+}
+
+function updateSideLabels(){
+  document.getElementById("sideLabel0").textContent = sideLabel(0) + t("p0suffix");
+  document.getElementById("sideLabel1").textContent = sideLabel(1) + t("p1suffix");
+}
+
+// 2026-09-08修正: 英語ビルドでも「配置」「移動」「パス」や駒の内部キー名
+// （歩兵など）がそのまま出力されていた不具合を修正。pieceLabel()で表示名に
+// 変換し、文言自体もUI_STRINGSのactionPlace/actionMove/actionPass経由で
+// 言語ごとに切り替える。
+function actionText(a){
+  if (!a) return "";
+  if (a[0]==="place") return t("actionPlace")(pieceLabel(a[1]), "(" + a[2][0] + "," + a[2][1] + ")");
+  if (a[0]==="move") return t("actionMove")("(" + a[1][0] + "," + a[1][1] + ")", "(" + a[2][0] + "," + a[2][1] + ")");
+  return t("actionPass");
+}
+
+// 2026-08-09追加/2026-09-06,07再設計(2回目): 棋譜の構造をラウンド単位から
+// コマ単位の再生に対応させるための変換。各ラウンドを「先手配置」「後手配置」
+// 「戦闘解決」「共同生産」の4コマに展開する（turns フィールドを持たない旧形式
+// の棋譜を開いてもエラーにならないよう、その場合は先攻・後攻2手分をまとめた
+// 「round_legacy」1コマにフォールバックする）。
+//
+// 2026-09-07再修正(2回目): ユーザーがtune_balance_search.py等の実装を示して
+// 指摘したとおり、以前の2回の設計（(1)戦闘解決コマを廃止し生産コマに戦闘結果を
+// 引き継がせる方式、(2)生産をplayer0→player1の2コマに分割する方式）は
+// どちらも誤りだった。game.pyのGame.run()で実際に確認した正しいラウンド構造
+// は次の4段階:
+//   先手配置 → 後手配置 → 戦闘解決 → 共同生産
+// （alternate_initiative_each_roundにより、偶数ラウンドでは先手・後手の
+// 手番順が反転する＝「後手配置→先手配置→戦闘解決→共同生産」になる）。
+// これに合わせて:
+//   ・戦闘解決を独立したコマとして復活させた（このコマの表示タイミングでのみ
+//     「このラウンドの戦闘結果」を見せる。次のコマ以降には一切引き継がない
+//     ＝旧combatDisplayのような永続化オブジェクトは廃止した）。戦闘解決コマの
+//     盤面・RP・持ち駒には、web_api.py側で「戦闘解決直後・生産前」のスナップ
+//     ショットとして確定しているr.board（board_after_combat）・
+//     r.rp_after_combat・r.reserve_after_combatを使う（これらを持たない
+//     古い棋譜では、フォールバックとしてr.rp/r.reserveをそのまま使う＝
+//     生産後の値になるが、古い棋譜を開けなくなるよりはよい）。
+//   ・生産は先手・後手が同時に解決される（production_phase()は内部的には
+//     player0→player1の順にループしているが、互いの選択を参照しないため
+//     ゲーム上は同時。前回「不明なため要確認」としていた点がユーザーにより
+//     確認された）と判明したため、1コマにまとめ直した（両者の生産結果を
+//     一緒に表示する）。
+//
+// 2026-09-07再修正(2回目): 各コマのwheelStepは、play_vs_ai_template.html側の
+// proceedAfter()/doCombatPhase()/startNextRound()と全く同じ規則＝上記4段階の
+// 切替タイミングそれぞれで+1する（先手配置・後手配置は別々の点を指すため、
+// 個々の手番でも進む）。これにより両画面で「現在のフェーズ」の意味・回転量が
+// 完全に一致する。
+function buildSteps(g){
+  const steps = [];
+  let vp = null; // 該当ラウンドの戦闘解決が終わるまではVPは未確定として null のまま表示
+  let wheelStep = 0;
+  for (const r of g.kifu){
+    const turns = (r.turns && r.turns.length) ? r.turns : null;
+    if (turns){
+      turns.forEach((t, idx) => {
+        steps.push({
+          type: "turn",
+          round: r.round,
+          seatIndex: idx,               // 0=このラウンドの先攻, 1=後攻
+          player: t.player,
+          action: t.action,
+          board: t.board,
+          rp: t.rp,
+          vp: vp,
+          // 2026-08-15追加: 持ち駒。旧形式棋譜（reserveフィールドが無い）でも
+          // エラーにならないよう、無ければ null にフォールバックする。
+          reserve: t.reserve || null,
+          candidates: t.candidates || null,
+          randomPick: !!t.random_pick,
+          wheelStep: wheelStep,
+        });
+        // 2026-09-07再修正(2回目): 先攻・後攻それぞれの配置は円周上の別の点を
+        // 指すため、手番が変わるたびにホイールを1つ進める。
+        wheelStep++;
+      });
+    } else {
+      // 旧形式棋譜（turnsが無い）: 先攻・後攻2手分をこの1コマにまとめて
+      // 表示せざるを得ない。個別の手番として点を1つずつ進められないため、
+      // このコマ自体は先攻の点(wheelStep)で表示し、後攻の分も合わせて
+      // 2つ分まとめて進めて次の戦闘解決コマへ正しくつなげる。
+      steps.push({
+        type: "round_legacy",
+        round: r.round,
+        actions: r.actions,
+        board: r.board,
+        rp: r.rp,
+        vp: vp,
+        reserve: r.reserve || null,
+        candidates: null,
+        randomPick: false,
+        wheelStep: wheelStep,
+      });
+      wheelStep += 2;
+    }
+    vp = r.vp;
+
+    // 戦闘解決コマ（2026-09-07再修正(2回目)で復活。このコマの表示タイミング
+    // でだけ「このラウンドの戦闘結果」を見せる。盤面・RP・持ち駒は戦闘解決
+    // 直後・生産前のスナップショットを使う）。
+    steps.push({
+      type: "combat",
+      round: r.round,
+      board: r.board, // web_api.py: board_after_combat（戦闘解決直後・生産前）
+      rp: r.rp_after_combat || r.rp,
+      vp: vp,
+      reserve: r.reserve_after_combat || r.reserve || null,
+      damage: r.damage || {},
+      deaths: r.deaths || [],
+      vpKillBonus: r.vp_kill_bonus,
+      rpWasted: r.rp_wasted || null,
+      wheelStep: wheelStep,
+    });
+    wheelStep++; // 共同生産フェーズが始まる
+
+    // 共同生産コマ（2026-09-07再修正(2回目): 先手・後手同時に解決されると
+    // 確認が取れたため、1コマにまとめて両者の結果を表示する）。
+    steps.push({
+      type: "production",
+      round: r.round,
+      board: r.board, // 生産は盤面の駒を動かさないため戦闘解決後と同じでよい
+      rp: r.rp,
+      vp: vp,
+      reserve: r.reserve || null,
+      produced: r.produced || {},
+      wheelStep: wheelStep,
+    });
+    wheelStep++; // 次のラウンドの配置フェーズが始まる
+  }
+  return steps;
+}
+
+function specialClass(x,y,vp,es,ms,round){
+  for (const pt of vp.tengen) if (pt[0]===x && pt[1]===y) return "tengen";
+  for (const pt of vp.stars) if (pt[0]===x && pt[1]===y) return "star";
+  for (const pt of es.points) if (pt[0]===x && pt[1]===y) return "econ";
+  if (ms && ms.points){
+    for (const pt of ms.points) if (pt[0]===x && pt[1]===y){
+      return (round !== undefined && round >= ms.start_round) ? "midgame" : "midgame-inactive";
+    }
+  }
+  return "";
+}
+
+function buildTabs(){
+  const tabs = document.getElementById("tabs");
+  tabs.innerHTML = "";
+  GAMES.forEach((g,i) => {
+    const b = document.createElement("button");
+    // 2026-09-12追加: 投了で終わった対局はタブの見出しにも一目で分かるよう
+    // 「（投了）」を付ける（g.result.reason==="resigned"のときのみ）。
+    const resigned = g && g.result && g.result.reason === "resigned";
+    b.textContent = t("tabLabel")(i+1) + (resigned ? t("tabResignedSuffix") : "");
+    b.id = "tab"+i;
+    b.onclick = () => selectGame(i);
+    tabs.appendChild(b);
+  });
+}
+
+// 2026-09-12追加: 選択中の試合の最終結果（勝者・決着理由・投了かどうか）を
+// #resultBarに表示する。play_vs_ai.html「棋譜をダウンロード」・
+// generate_kifu.pyのどちらが吐いた棋譜でも、result フィールド
+// （{winner, reason, rounds, cumulative_vp, resigned_player}）が入っていれば
+// 表示できる。旧形式の棋譜（resultフィールド自体を持たない）を開いても
+// エラーにならないよう、その場合は「決着情報なし」の案内に切り替える。
+function renderResultBar(){
+  const bar = document.getElementById("resultBar");
+  const g = GAMES[curGame];
+  const result = g && g.result;
+  if (!result || typeof result.winner === "undefined"){
+    bar.style.display = "none";
+    return;
+  }
+  bar.style.display = "block";
+  bar.classList.toggle("resigned", result.reason === "resigned");
+  if (result.winner === null || typeof result.winner === "undefined"){
+    bar.textContent = t("resultDraw");
+    return;
+  }
+  const seat = result.winner === 0 ? t("seatFirst") : t("seatSecond");
+  const winnerLabel = sideLabel(result.winner);
+  let reasonText;
+  if (result.reason === "resigned"){
+    // resigned_playerは「実際に投了した側」。表示上はその陣営のラベルを使う。
+    const resignerIdx = (typeof result.resigned_player === "number") ? result.resigned_player : (1 - result.winner);
+    reasonText = t("winReasons").resigned(sideLabel(resignerIdx));
+  } else {
+    const entry = t("winReasons")[result.reason];
+    reasonText = (typeof entry === "function") ? entry() : (entry || result.reason);
+  }
+  bar.textContent = t("resultWinner")(winnerLabel, seat) + " ・ " + reasonText;
+}
+
+// 2026-09-07改修: play_vs_ai_template.htmlのbuildBoardSkeleton()と同じ構造
+// （#boardGridOuterに列/行のaxisLabelと81マスを直接並べるCSS Grid）にする。
+function buildBoard(){
+  const outer = document.getElementById("boardGridOuter");
+  outer.innerHTML = "";
+  const g = GAMES[curGame];
+  // 2026-08-31修正: config.py/generate_kifu.pyの`economy_spots`→`rp_spots`リネーム
+  // （検証ハンドブック0.78/0.80節）にこのテンプレートだけ追従できていなかった
+  // （0.75節の容量圧縮でHTML類が引き継ぎ資料から外れており、リネーム作業時に
+  // 手元になかったため）。新形式(rp_spots)を優先しつつ、リネーム前に生成した
+  // 旧形式棋譜（economy_spotsのみ持つ）でもエラーにならないようフォールバックする。
+  const rpSpots = g.rp_spots || g.economy_spots;
+  outer.appendChild(document.createElement("div"));
+  for (let x=0;x<g.board_size;x++){
+    const lab = document.createElement("div");
+    lab.className = "axisLabel";
+    lab.textContent = x+1;
+    outer.appendChild(lab);
+  }
+  for (let y=0;y<g.board_size;y++){
+    const rowLab = document.createElement("div");
+    rowLab.className = "axisLabel";
+    rowLab.textContent = y+1;
+    outer.appendChild(rowLab);
+    for (let x=0;x<g.board_size;x++){
+      const cell = document.createElement("div");
+      cell.id = "cell_"+cellKey(x,y);
+      cell.className = "cell " + specialClass(x,y,g.vp_spots,rpSpots,g.midgame_spots,1);
+      outer.appendChild(cell);
+    }
+  }
+}
+
+// 2026-09-06追加: play_vs_ai.htmlのstatsLine()と同じ書式（駒のHP/ATK/移動力/射程）。
+// g.pieces（CONFIG["pieces"]。無ければnullを渡す＝古い棋譜用フォールバック）。
+// 2026-09-08修正: 射程の括弧が英語ビルドでも全角「（）」のままだったのを、
+// play_vs_ai_template.htmlのstatsLine()と同じくロケールに応じて切り替える。
+function pieceStatsLine(cfg){
+  if (!cfg) return "";
+  let s = `HP${cfg.hp} ATK${cfg.atk} ${t("moveLabel")}${cfg.move}`;
+  if (cfg.ranged){
+    s += BUILD_OPTIONS.locale === "en" ? ` (${t("rangeLabel")}${cfg.range})` : `（${t("rangeLabel")}${cfg.range}）`;
+  }
+  return s;
+}
+
+// 2026-09-06追加: play_vs_ai.htmlのupdateReservePanel()/updateAiReservePanel()と
+// 同じ見た目（駒名＋配置コスト＋HP/ATK等のカード）で持ち駒を表示する。
+// g.pieces（CONFIG["pieces"]）を持たない棋譜（このビューアー刷新より前に生成した
+// もの）でも、駒名だけの簡易表示にフォールバックしてエラーにならないようにする。
+function renderReserveCards(container, list){
+  const g = GAMES[curGame];
+  container.innerHTML = "";
+  if (!list.length){
+    container.innerHTML = `<span class="muted">${t("reserveNone")}</span>`;
+    return;
+  }
+  if (!g.pieces){
+    container.textContent = list.map(pieceLabel).join(t("listSeparator"));
+    return;
+  }
+  const row = document.createElement("div");
+  row.className = "reserveRow";
+  list.forEach(kind => {
+    const cfg = g.pieces[kind];
+    const card = document.createElement("div");
+    card.className = "reserveCard";
+    card.innerHTML = cfg
+      ? `<div class="kindName">${pieceLabel(kind)}${costLabel(cfg.cost)}</div><div class="kindStats">${pieceStatsLine(cfg)}</div>`
+      : `<div class="kindName">${pieceLabel(kind)}</div>`;
+    row.appendChild(card);
+  });
+  container.appendChild(row);
+}
+
+function renderStep(){
+  const g = GAMES[curGame];
+  const step = STEPS[curStep];
+  if (!step) return;
+
+  // 2026-09-06/07追加/2026-09-07再修正(2回目): play_vs_ai.htmlとの表示統一。
+  // フェーズ色分け（緑=配置、紫=共同生産、赤=戦闘解決）と、回転ホイール
+  // （wheelStepはbuildSteps()で計算済み。play_vs_ai.html側の
+  // proceedAfter()/doCombatPhase()/startNextRound()と全く同じ規則）。
+  const phaseOf = step.type === "production" ? "phaseProduction"
+    : step.type === "combat" ? "phaseCombat"
+    : "phasePlacement";
+  const phaseLabelText = step.type === "production" ? t("phaseProduction")
+    : step.type === "combat" ? t("phaseCombat")
+    : t("phasePlacement");
+  const badge = document.getElementById("phaseBadge");
+  badge.className = "phaseBadge " + phaseOf;
+  badge.textContent = phaseLabelText;
+  document.getElementById("boardWrap").className = phaseOf;
+  document.getElementById("wheelRound").textContent = t("wheelRoundLabel")(step.round);
+  const disc = document.getElementById("wheelDisc");
+  if (disc) disc.style.transform = "rotate(" + (step.wheelStep * 45 + 22.5) + "deg)";
+
+  for (let y=0;y<g.board_size;y++) for (let x=0;x<g.board_size;x++){
+    const cell = document.getElementById("cell_"+cellKey(x,y));
+    cell.innerHTML = "";
+    cell.className = "cell " + specialClass(x,y,g.vp_spots,(g.rp_spots || g.economy_spots),g.midgame_spots,step.round);
+  }
+  for (const pc of step.board){
+    const cell = document.getElementById("cell_"+cellKey(pc.pos[0], pc.pos[1]));
+    const owner = pc.owner;
+    const pct = Math.max(0, Math.round((pc.hp/pc.max_hp)*100));
+    const div = document.createElement("div");
+    div.className = "piece";
+    div.style.background = OWNER_BG[owner];
+    div.style.border = "2px solid " + OWNER_COLOR[owner];
+    div.style.color = OWNER_COLOR[owner];
+    div.textContent = pieceShort(pc.kind);
+    const bar = document.createElement("div");
+    bar.className = "hpbar";
+    const inner = document.createElement("div");
+    inner.className = "hpbar-inner";
+    inner.style.width = pct + "%";
+    inner.style.background = OWNER_COLOR[owner];
+    bar.appendChild(inner);
+    div.appendChild(bar);
+    cell.appendChild(div);
+  }
+
+  document.getElementById("rp0").textContent = "RP " + step.rp[0];
+  document.getElementById("rp1").textContent = "RP " + step.rp[1];
+  document.getElementById("vp0").textContent = "VP " + (step.vp ? step.vp[0] : "-");
+  document.getElementById("vp1").textContent = "VP " + (step.vp ? step.vp[1] : "-");
+
+  // 2026-08-15追加/2026-09-06,07改修: 持ち駒ログ。play_vs_ai.htmlと同じカード表示
+  // （renderReserveCards()）にし、閲覧専用なのでクリックは一切付けない。
+  const reserveLog = document.getElementById("reserveLog");
+  reserveLog.innerHTML = "";
+  if (!step.reserve){
+    reserveLog.innerHTML = `<span class="muted">${t("reserveNoData")}</span>`;
+  } else {
+    [0,1].forEach(pl => {
+      const wrap = document.createElement("div");
+      wrap.style.marginBottom = "6px";
+      const title = document.createElement("div");
+      title.style.color = OWNER_COLOR[pl];
+      title.style.fontSize = "12px";
+      title.style.marginBottom = "2px";
+      title.textContent = sideLabel(pl) + ":";
+      wrap.appendChild(title);
+      const cardsEl = document.createElement("div");
+      wrap.appendChild(cardsEl);
+      reserveLog.appendChild(wrap);
+      renderReserveCards(cardsEl, step.reserve[pl] || []);
+    });
+    // 2026-09-07再修正(2回目): rp_wastedは戦闘解決（収入計算）のタイミングで
+    // 確定する値のため、combatコマの時だけ表示する（他のコマには引き継がない）。
+    const rpWasted = step.type === "combat" ? step.rpWasted : null;
+    if (rpWasted && (rpWasted[0] > 0 || rpWasted[1] > 0)){
+      const warn = document.createElement("div");
+      warn.className = "randomnote";
+      warn.style.marginTop = "6px";
+      warn.textContent = t("rpWastedWarning")(step.round, sideLabel(0), rpWasted[0], sideLabel(1), rpWasted[1]);
+      reserveLog.appendChild(warn);
+    }
+  }
+
+  // ラベル・スライダー
+  let label;
+  if (step.type === "turn"){
+    const seatLabel = step.seatIndex === 0 ? t("seatFirst") : t("seatSecond");
+    label = t("stepLabelTurn")(step.round, g.kifu.length, seatLabel, sideLabel(step.player));
+  } else if (step.type === "round_legacy"){
+    label = t("stepLabelLegacy")(step.round, g.kifu.length);
+  } else if (step.type === "combat"){
+    label = t("stepLabelCombat")(step.round, g.kifu.length);
+  } else {
+    // production（2026-09-07再修正(2回目): 先手・後手同時に解決されるため、
+    // turnコマと違い「誰の番か」は含めない）。
+    label = t("stepLabelProduction")(step.round, g.kifu.length);
+  }
+  document.getElementById("stepLabel").textContent = label;
+  document.getElementById("stepSlider").max = STEPS.length - 1;
+  document.getElementById("stepSlider").value = curStep;
+
+  // 2026-09-07修正/2026-09-07再修正(2回目): パネルの見出し。配置画面＝
+  // 「{ターン保有者}のこのターンの手」、戦闘解決画面＝「戦闘解決」、
+  // 共同生産画面＝「共同生産（アップキープ）」（先手・後手同時に解決される
+  // ため、生産のみ「誰の番か」は表示せず両者の結果を並べる）。
+  const actionsLogTitle = document.getElementById("actionsLogTitle");
+  const actionsLog = document.getElementById("actionsLog");
+  actionsLog.innerHTML = "";
+  if (step.type === "turn"){
+    actionsLogTitle.textContent = t("turnActionsTitle")(sideLabel(step.player));
+    const badgeClass = step.seatIndex === 0 ? "turn0" : "turn1";
+    const badgeLabel = step.seatIndex === 0 ? t("seatFirst") : t("seatSecond");
+    const d = document.createElement("div");
+    d.innerHTML = `<span class="stepbadge ${badgeClass}">${badgeLabel}</span>` +
+      `<span style="color:${OWNER_COLOR[step.player]}">${sideLabel(step.player)}: ${actionText(step.action)}</span>`;
+    actionsLog.appendChild(d);
+  } else if (step.type === "round_legacy"){
+    actionsLogTitle.textContent = t("legacyActionsTitle");
+    [0,1].forEach(pl => {
+      const a = step.actions[pl];
+      if (!a) return;
+      const d = document.createElement("div");
+      d.style.color = OWNER_COLOR[pl];
+      d.textContent = sideLabel(pl) + ": " + actionText(a);
+      actionsLog.appendChild(d);
+    });
+  } else if (step.type === "combat"){
+    // 2026-09-07再修正(2回目): 戦闘解決コマの復活。実際の戦闘結果（ダメージ・
+    // 撃破）はdeathsLog側にまとめて表示するため、ここでは簡潔な案内のみ。
+    actionsLogTitle.textContent = t("combatActionsTitle");
+    const d = document.createElement("div");
+    d.className = "muted";
+    d.textContent = t("combatNotice");
+    actionsLog.appendChild(d);
+  } else {
+    // production（2026-09-07再修正(2回目): 先手・後手同時に解決されるため、
+    // 両者の生産結果をまとめて表示する）。
+    actionsLogTitle.textContent = t("productionActionsTitle");
+    [0,1].forEach(pl => {
+      const kind = (step.produced || {})[pl];
+      const d = document.createElement("div");
+      d.className = "producedNote";
+      d.style.color = OWNER_COLOR[pl];
+      if (kind){
+        const cfg = g.pieces && g.pieces[kind];
+        const costTxt = cfg ? t("producedCostSuffix")(cfg.produce_cost) : "";
+        d.textContent = t("producedLine")(sideLabel(pl), pieceLabel(kind), costTxt);
+      } else {
+        d.textContent = t("producedNone")(sideLabel(pl));
+      }
+      actionsLog.appendChild(d);
+    });
+  }
+
+  // AI候補ログ（常時表示）
+  const candidatesLog = document.getElementById("candidatesLog");
+  candidatesLog.innerHTML = "";
+  if (step.type === "turn" && step.candidates && step.candidates.length){
+    const chosenText = actionText(step.action);
+    step.candidates.forEach(c => {
+      const row = document.createElement("div");
+      const text = actionText(c.action);
+      row.className = "candrow" + (text === chosenText ? " chosen" : "");
+      row.innerHTML = `<span>${text === chosenText ? "✓ " : ""}${text}</span><span class="candval">${c.value.toFixed(2)}</span>`;
+      candidatesLog.appendChild(row);
+    });
+    if (step.randomPick){
+      const note = document.createElement("div");
+      note.className = "randomnote";
+      note.textContent = t("randomPickNote");
+      candidatesLog.appendChild(note);
+    }
+  } else if (step.type === "turn"){
+    candidatesLog.innerHTML = `<span class="muted">${t("candidatesNone")}</span>`;
+  } else if (step.type === "round_legacy"){
+    candidatesLog.innerHTML = `<span class="muted">${t("candidatesLegacyNone")}</span>`;
+  } else if (step.type === "combat"){
+    candidatesLog.innerHTML = `<span class="muted">${t("candidatesCombatNone")}</span>`;
+  } else {
+    candidatesLog.innerHTML = `<span class="muted">${t("candidatesProductionNone")}</span>`;
+  }
+
+  // このラウンドの戦闘結果（2026-09-07再修正(2回目): ユーザー指摘によりcombatDisplay
+  // による永続化（次の戦闘解決まで表示し続ける方式）は廃止した。戦闘結果は
+  // 「戦闘解決」コマの表示タイミングでだけ見せる（他のコマでは見せない）。
+  const deathsLog = document.getElementById("deathsLog");
+  deathsLog.innerHTML = "";
+  if (step.type !== "combat"){
+    deathsLog.innerHTML = `<span class="muted">${t("deathsPlaceholder")}</span>`;
+  } else {
+    const dmgEntries = Object.entries(step.damage || {});
+    if (dmgEntries.length === 0 && (!step.deaths || step.deaths.length === 0)){
+      deathsLog.innerHTML = `<span class="muted">${t("deathsNone")(step.round)}</span>`;
+    } else {
+      const roundNote = document.createElement("div");
+      roundNote.className = "muted";
+      roundNote.style.marginBottom = "4px";
+      roundNote.textContent = t("deathsRoundHeader")(step.round);
+      deathsLog.appendChild(roundNote);
+      if (dmgEntries.length){
+        const dmgDiv = document.createElement("div");
+        dmgDiv.className = "muted";
+        dmgDiv.style.marginBottom = "4px";
+        dmgDiv.textContent = t("deathsDamageLabel") + dmgEntries.map(([pos,val]) => `(${pos})=${val}`).join(", ");
+        deathsLog.appendChild(dmgDiv);
+      }
+      (step.deaths || []).forEach(d => {
+        const div = document.createElement("div");
+        div.textContent = t("deathsKillLine")(sideLabel(d.owner), pieceLabel(d.kind), "(" + d.pos[0] + "," + d.pos[1] + ")");
+        deathsLog.appendChild(div);
+      });
+    }
+  }
+}
+
+// 2026-09-08修正: GAMESが0件（itch.io配布パッケージへ同梱した直後、対局を
+// まだ1度もダウンロード/読み込みしていない状態）でもエラーで固まらないよう、
+// 案内表示(#emptyState)に切り替える分岐を追加した。
+function selectGame(i){
+  const emptyEl = document.getElementById("emptyState");
+  const layoutEl = document.getElementById("mainLayout");
+  const topRowEl = document.getElementById("topRow");
+  if (!GAMES.length){
+    emptyEl.style.display = "block";
+    layoutEl.style.display = "none";
+    topRowEl.style.display = "none";
+    return;
+  }
+  emptyEl.style.display = "none";
+  layoutEl.style.display = "";
+  topRowEl.style.display = "";
+  curGame = i; curStep = 0;
+  STEPS = buildSteps(GAMES[i]);
+  for (let k=0;k<GAMES.length;k++){
+    document.getElementById("tab"+k).className = (k===i) ? "active" : "";
+  }
+  buildBoard();
+  updateSideLabels();
+  renderResultBar();
+  renderStep();
+}
+
+function setStep(s){
+  curStep = Math.max(0, Math.min(s, STEPS.length - 1));
+  renderStep();
+}
+
+function stepStep(delta){ setStep(curStep + delta); }
+
+function togglePlay(){
+  playing = !playing;
+  document.getElementById("playBtn").textContent = playing ? t("playBtnPause") : t("playBtnPlay");
+  if (playing){
+    timer = setInterval(() => {
+      if (curStep >= STEPS.length - 1){ togglePlay(); return; }
+      setStep(curStep+1);
+    }, 500);
+  } else {
+    clearInterval(timer);
+  }
+}
+
+// 2026-09-06追加: 「棋譜をダウンロードし、同じフォルダに置いてブラウザを更新しても
+// 読み込まれない」への対応。このHTMLはbuild_tools.pyがビルド時点の1試合分を
+// __DATA__として埋め込むだけの完全な静的ファイルで、実行時にフォルダの中身を
+// 見に行く仕組みは無い（原因は棋譜ファイルの命名規則の違いではなく、この
+// 構造そのもの。play_vs_ai.html「棋譜をダウンロード」ボタンの命名規則自体は
+// generate_kifu.pyのkifu_data_<タイムスタンプ>.jsonと同じ接頭辞・拡張子であり、
+// build_tools.py viewer側の「フォルダ内の最新kifu_data_*.jsonを自動選択する」
+// 処理ともファイル名としては矛盾しない）。
+// 再ビルドせずにその場で開けるよう、ダウンロードした棋譜JSONをファイル選択
+// ダイアログから読み込み、埋め込み済みの試合一覧(GAMES)に追加するボタンを追加した。
+// 受け付ける形式: generate_kifu.py / play_vs_ai.htmlの「棋譜をダウンロード」が
+// 出力する形式と同じ「1試合分の辞書を要素に持つ配列」（複数試合でもよい）。
+// 配列でなく辞書1件だけの場合も、利便性のため配列へ包んで受け付ける。
+function loadKifuFile(file){
+  const statusEl = document.getElementById("loadKifuStatus");
+  const reader = new FileReader();
+  reader.onload = () => {
+    let parsed;
+    try {
+      parsed = JSON.parse(reader.result);
+    } catch (e) {
+      statusEl.textContent = t("loadJsonError")(e.message);
+      statusEl.style.color = "#c0392b";
+      return;
+    }
+    const games = Array.isArray(parsed) ? parsed : [parsed];
+    const invalidIdx = games.findIndex(g => !g || !Array.isArray(g.kifu));
+    if (games.length === 0 || invalidIdx !== -1){
+      statusEl.textContent = t("loadFormatError");
+      statusEl.style.color = "#c0392b";
+      return;
+    }
+    const startIdx = GAMES.length;
+    games.forEach(g => GAMES.push(g));
+    buildTabs();
+    selectGame(startIdx); // 追加した中の最初の試合を選んで表示する
+    statusEl.textContent = t("loadSuccess")(file.name, startIdx+1, GAMES.length);
+    statusEl.style.color = "#2E8B57";
+  };
+  reader.onerror = () => {
+    statusEl.textContent = t("loadReadError");
+    statusEl.style.color = "#c0392b";
+  };
+  reader.readAsText(file, "utf-8");
+}
+
+document.getElementById("loadKifuBtn").onclick = () => {
+  document.getElementById("loadKifuInput").click();
+};
+document.getElementById("loadKifuInput").onchange = (e) => {
+  const file = e.target.files && e.target.files[0];
+  if (file) loadKifuFile(file);
+  e.target.value = ""; // 同じファイルを続けて選び直しても change が発火するようにする
+};
+
+applyLocaleStaticText();
+document.getElementById("emptyStateTitle").textContent = t("emptyStateTitle");
+document.getElementById("emptyStateBody").textContent = t("emptyStateBody");
+buildTabs();
+// 2026-09-12修正: localStorageから読み込んだ対局（直前にプレイした対局が
+// 末尾に追加される）がある場合は、一覧の先頭(0)ではなく最後＝最新の対局を
+// 既定で開く。「対局を終えてビューアーを開いたら、まず見たいのは直前の
+// 対局」という導線に合わせる（ビルド時にサンプル棋譜を1件だけ埋め込む
+// 従来の使い方でも、その1件が最後の要素になるだけで挙動は変わらない）。
+selectGame(Math.max(0, GAMES.length - 1));
+</script>
+</body>
+</html>

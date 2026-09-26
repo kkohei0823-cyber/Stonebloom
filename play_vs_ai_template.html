@@ -1,0 +1,2518 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>AI対戦 - 4X×囲碁×将棋ハイブリッド</title>
+<!-- 2026-08-12追加: 0.22節のPyodide化改修時にこのタグ自体が抜けており、
+     loadPyodide()が未定義関数の呼び出しとして失敗し、「Python実行環境を
+     読み込み中...」の表示のまま先手/後手選択画面に進めなくなっていた
+     （体感上は「10秒以上待っても始まらない」に見えるが、実際は永遠に
+     終わらない状態だった）。 -->
+<script src="https://cdn.jsdelivr.net/pyodide/v0.26.2/full/pyodide.js"></script>
+<style>
+  :root {
+    --accent: #2E8B57;
+    --accent-dark: #1f6640;
+    --p0: #378ADD;
+    --p1: #EF9F27;
+    --p0-bg: #E6F1FB;
+    --p1-bg: #FAEEDA;
+    /* 2026-09-07修正: 生産(production)を表す色が後手(--p1)の橙と紛らわしい
+       という指摘を受け、黄色系(#eab308)から紫系(violet)へ変更。
+       盤面の枠色・生産(アップキープ)のバッジ/パネル枠・現在のフェーズ
+       ホイールの点の色、すべてここで一元管理する。
+       2026-09-07再修正: 戦闘解決フェーズを独立した第3の状態として追加
+       （それまでは「配置・移動⇔生産」の2状態しかなかったが、実際の
+       ラウンド構造は「先手配置→後手配置→戦闘解決→共同生産」の4段階で
+       あることが判明したため、戦闘解決用の色を追加する）。 */
+    --place-color: #16a34a;
+    --prod-color: #7c3aed;
+    --prod-bg: #f5f3ff;
+    --combat-color: #dc2626;
+    --combat-bg: #fef2f2;
+  }
+  body { font-family: -apple-system, "Hiragino Sans", "Yu Gothic", sans-serif; background:#f5f4f0; color:#222; margin:0; padding:16px 20px; }
+  h1 { font-size:18px; font-weight:600; margin:0 0 4px; }
+  .subtitle { font-size:13px; color:#888; margin:0 0 16px; }
+  .layout { display:flex; gap:16px; flex-wrap:wrap; align-items:flex-start; }
+  /* 2026-09-08追加: タイトル画面（起動直後、Pythonエンジン読み込み中〜プレイ開始前に表示）。
+     以前はh1/subtitle/bootStatusを常時画面最上部に表示し続けていたため、対局中も
+     縦方向のスペースを常に消費していた（100%表示だと画面に収まりきらずスクロールが
+     必要になり操作しづらい、という指摘の一因）。対局開始後はこのタイトル画面ごと
+     非表示にすることで、対局中の縦方向の余白を取り戻す狙いも兼ねる。 */
+  .titleScreen { max-width:640px; margin:48px auto; text-align:center; }
+  .titleScreen h1 { font-size:26px; margin-bottom:8px; }
+  .titleScreen .subtitle { font-size:14px; margin-bottom:18px; }
+  .titleActions { display:flex; gap:10px; justify-content:center; align-items:center; margin-top:18px; flex-wrap:wrap; }
+  .titleActions button.mainBtn { font-size:15px; padding:12px 28px; }
+  .titleActions button.ghostBtn { font-size:14px; padding:12px 20px; }
+  /* 2026-09-12追加: タイトル画面（プレイ開始・遊び方の並び）に置く言語切替
+     ボタン。ビルド時に固定されるBUILD_OPTIONS.localeとは別に、実行時に
+     表示言語（駒名・UI文言）をその場で切り替えられるようにする（対局開始前の
+     タイトル画面限定。対局中の切替は非対応 — switchLocale()参照）。
+     他の2つのボタンより控えめな見た目・小さめのサイズにしたいという要望
+     どおり、専用クラスで明示的に小さくする。 */
+  .titleActions button.langToggleBtn { font-size:12px; padding:7px 14px; }
+  /* 2026-09-08追加: 対局画面上部の常設バー（演出モード切替・ルール説明・
+     棋譜ビューアーへのリンクをまとめる）。以前は演出モードのトグルだけが
+     単独の行を占めていたが、他の常設リンクと合わせて1行にまとめ、
+     対局中に消費する縦方向のスペースを最小限にする。 */
+  .topBar { display:flex; align-items:center; gap:16px; flex-wrap:wrap; margin-bottom:10px; font-size:13px; }
+  .topBar label { display:flex; align-items:center; gap:6px; }
+  .viewerLink { text-decoration:none; color:#222; display:inline-flex; align-items:center; }
+  .viewerLink:hover { text-decoration:underline; }
+  /* 2026-09-08追加: ルール説明（How to Play）モーダル。#overlay（先手/後手選択・
+     対局終了）とは独立させ、対局中いつでも呼び出せるようにする（既存のgs等の
+     対局状態には一切触れない、読むだけの画面のため）。 */
+  #howToOverlay { position:fixed; inset:0; background:rgba(0,0,0,0.45); display:none; align-items:center; justify-content:center; z-index:60; padding:20px; box-sizing:border-box; }
+  .howToModal { background:#fff; border-radius:12px; padding:22px 26px; max-width:640px; width:100%; max-height:80vh; overflow-y:auto; text-align:left; box-sizing:border-box; }
+  .howToModal h2 { margin:0 0 12px; font-size:19px; }
+  .howToModal h3 { margin:18px 0 6px; font-size:14.5px; color:var(--accent-dark); }
+  .howToModal h3:first-of-type { margin-top:0; }
+  .howToModal p, .howToModal li { font-size:13px; line-height:1.7; color:#333; }
+  .howToModal ul { margin:4px 0 10px 20px; padding:0; }
+  .howToModal .closeRow { text-align:right; margin-top:18px; position:sticky; bottom:0; background:#fff; padding-top:8px; }
+  .tutorialHint { font-size:11.5px; color:#a06c1a; background:#fffaf0; border:1px solid #f0dca0; border-radius:6px; padding:4px 8px; margin:6px 0 0; text-align:left; }
+  #boardWrap { position:relative; }
+  /* 2026-09-07追加: width/heightを明示指定（22px+48px*9+gap2px*9=472px）。
+     指定しないと、このdiv自体はdisplay:grid以前に幅autoの通常のブロック要素
+     として扱われ、兄弟要素（.controls等、テキスト量で幅が変わる要素）の
+     都合でこの要素自身の幅が広がることがあり、その場合グリッドの列指定
+     （22px repeat(9,48px)）自体は変わらなくても、この要素にかけている
+     枠線(outline)だけが伸び縮みして見える不具合の原因になる
+     （local_viewer_template.htmlで実際に発生した「再生中に盤面の枠の
+     大きさが変わる」不具合の原因はこれだった）。固定することで、
+     現在のフェーズを示す枠色(下記boardPhasePlacement/boardPhaseProduction)
+     が常に同じ大きさで表示されるようにする。 */
+  #boardGridOuter { display:grid; grid-template-columns: 22px repeat(9,48px); grid-template-rows: 22px repeat(9,48px); gap:2px; width:472px; height:472px; }
+  /* 2026-09-07追加: local_viewer_template.htmlと表示方法を統一するため、
+     盤面そのものにも現在のフェーズ（配置・移動=緑／生産=紫）を示す枠を
+     つける。#mainPanelのmodeWaiting（AIの手番中）はこの枠には影響しない
+     （AIの手番であっても配置・移動フェーズ自体は変わらないため）。 */
+  #boardWrap.boardPhasePlacement #boardGridOuter { outline:3px solid var(--place-color); outline-offset:4px; }
+  #boardWrap.boardPhaseProduction #boardGridOuter { outline:3px solid var(--prod-color); outline-offset:4px; }
+  /* 2026-09-07再修正: 戦闘解決フェーズ用の枠色を追加。doCombatPhase()が
+     apiResolveRoundEnd()呼び出し直後（生産の前）に短時間だけこのクラスを
+     つける。 */
+  #boardWrap.boardPhaseCombat #boardGridOuter { outline:3px solid var(--combat-color); outline-offset:4px; }
+  .axisLabel { display:flex; align-items:center; justify-content:center; font-size:11px; color:#999; }
+  #board { display:contents; }
+  .cell { position:relative; display:flex; align-items:center; justify-content:center; font-size:12px; background:#f8f7f2; border-radius:4px; cursor:pointer; transition:background 0.1s; }
+  .cell:hover { background:#eceae2; }
+  .cell.star { background:#eef0e6; }
+  .cell.tengen { background:#eef0e6; border:1px solid #999; }
+  .cell.econ { background:#eef7ff; }
+  /* 2026-08-07追加: 隅の中盤解禁スポット(midgameSpots)。10ラウンド目以降は
+     amber系の実線枠で強調し、それまでは斜線ハッチングで「まだ解禁されていない」
+     ことを視覚的に示す。 */
+  .cell.midgame { background:#fff4e0; border:2px solid #d99a2b; box-shadow: inset 0 0 0 1px #fff4e0; }
+  .cell.midgame-inactive {
+    background:repeating-linear-gradient(45deg, #f3f0e8, #f3f0e8 4px, #e9e4d6 4px, #e9e4d6 8px);
+    border:1px dashed #b8ab8a;
+  }
+  .cell.selectable { box-shadow: inset 0 0 0 2px var(--accent); background:#e4f3ea; }
+  .cell.selectedSrc { box-shadow: inset 0 0 0 2px #185FA5; }
+  .cell.banned::after { content:"×"; position:absolute; top:1px; right:3px; font-size:10px; color:#c0392b; }
+  .piece { width:38px; height:38px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:600; font-size:15px; }
+  .hpbar { position:absolute; bottom:2px; left:5px; right:5px; height:3px; background:#ddd; border-radius:2px; overflow:hidden; }
+  .hpbar-inner { height:100%; }
+  .side { min-width:300px; flex:1; max-width:380px; }
+  .statrow { display:flex; gap:12px; margin-bottom:12px; align-items:stretch; }
+  .statcard { background:#fff; border-radius:8px; padding:12px; flex:1; min-width:0; border:1px solid #e5e3da; }
+  /* ----- 2026-09-12追加: ラウンド数・現在フェーズ表示をRP/VP表示(statrow)の
+     真ん中に常設する -----
+     背景: スマホ幅では配置フェーズの操作パネル(#mainPanel)が持ち駒の数で
+     縦幅が変わり、生産フェーズの操作パネル(#prodPanel)は常に縦幅が大きい
+     ため、それらの下に置いていた#turnWheelPanel（ラウンド数・現在フェーズの
+     表示）がスクロールしないと見えないタイミングがあるという指摘を受けた。
+     画面遷移（別画面を開いて戻る）は対局のテンポを損なうため使わず、
+     「常にスクロールなしで見えている」statrow（RP/VP表示の行。層順的に
+     常に一番上）自体にラウンド数・現在フェーズを埋め込むことで解決する。
+     中身は#turnWheelPanel（回転ホイール）とは別の軽量な表示（ラウンド数の
+     数字＋現在フェーズの色付きバッジ）にする。#turnWheelPanelの回転ホイール
+     自体はデスクトップでは元々常時表示され問題が無かったため引き続き残すが、
+     スマホ幅ではこの.statCenterと表示内容が重複するため隠す
+     （@media (max-width:760px)の#turnWheelPanel参照）。
+     JS側の更新箇所: updateStats()（ラウンド数）・setBoardPhaseClass()経由の
+     updateCenterPhaseBadge()（フェーズ）。 */
+  .statCenter {
+    flex:0 0 auto; min-width:60px; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; gap:3px;
+    background:#fff; border-radius:8px; padding:8px 8px; border:1px solid #e5e3da;
+  }
+  .statCenter .label { margin:0; font-size:11px; white-space:nowrap; }
+  .statCenter .bignum { margin:0; font-size:17px; }
+  .statCenter .phaseBadge { margin:0; white-space:nowrap; }
+  .phaseBadge.modeCombat { background:var(--combat-color); color:#fff; }
+  /* 2026-09-07修正: 「あなた(you)/AI(ai)」という人間側基準のクラス名で枠色を
+     切り替えていたため、後手（player1）を選んで対局すると、本来常に青である
+     はずのplayer0(先手)の枠が橙、常に橙であるはずのplayer1(後手)の枠が青に
+     なってしまうバグがあった（後手を選んだ場合のみhumanPlayer===0が偽になり
+     class="ai"が付与されてしまうため）。先手/後手の色は対局者に関わらず常に
+     固定（player0=青、player1=橙）でなければならないので、枠色はプレイヤー
+     番号に紐づくp0/p1クラスに変更し、HTML側に静的に付与する（JS側では
+     二度と切り替えない。「あなた」か「AI」かの表示はテキストラベルのみで行う）。 */
+  .statcard.p0 { border-color: var(--p0); }
+  .statcard.p1 { border-color: var(--p1); }
+  .label { font-size:12px; color:#888; margin:0 0 4px; }
+  .bignum { font-size:20px; font-weight:600; margin:0; }
+  .panel { background:#fff; border-radius:8px; padding:14px; border:1px solid #e5e3da; margin-bottom:14px; }
+  .panel h2 { font-size:13px; margin:0 0 10px; color:#555; }
+  /* 2026-09-12追加: パス・AIの持ち駒を確認・投了ボタンの常設バー。
+     .panelクラス（カード見た目）は意図的に使わない（このすぐ上のHTML側
+     コメント参照）。margin-bottomはスマホ幅では@media (max-width:760px)側の
+     #actionBarで8pxに上書きする。 */
+  #actionBar { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; }
+  .reserveRow { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px; }
+  .reserveBtn { font-family:inherit; font-size:12px; padding:8px 10px; border-radius:8px; border:1.5px solid #ccc; background:#fff; cursor:pointer; text-align:left; line-height:1.5; }
+  .reserveBtn:hover:not(:disabled) { border-color: var(--accent); background:#eefaf1; }
+  .reserveBtn.active { border-color: var(--accent); background:#dff2e5; font-weight:600; }
+  .reserveBtn:disabled { opacity:0.4; cursor:not-allowed; }
+  .reserveBtn .kindName { font-weight:600; }
+  .reserveBtn .kindStats { color:#999; font-size:10px; }
+  /* 2026-08-14追加: AI持ち駒表示（閲覧専用）。押せないことが分かるよう
+     自分側のreserveBtnより主張を弱くし、無効化グレーアウトは使わない
+     （disabledの薄い表示だと「不作為で押せない」ように見えるため）。 */
+  .reserveBtn.readonly { cursor:default; opacity:1; border-color:#ddd; background:#fafafa; }
+  .reserveBtn.readonly:hover { border-color:#ddd; background:#fafafa; }
+  button.mainBtn { font-family:inherit; font-size:13px; padding:8px 14px; border-radius:8px; border:1px solid var(--accent); background:var(--accent); color:#fff; cursor:pointer; }
+  button.mainBtn:hover { background:var(--accent-dark); }
+  button.mainBtn:disabled { opacity:0.4; cursor:not-allowed; background:#aaa; border-color:#aaa; }
+  button.ghostBtn { font-family:inherit; font-size:13px; padding:8px 14px; border-radius:8px; border:1px solid #ccc; background:#fff; cursor:pointer; }
+  button.ghostBtn:hover { background:#eee; }
+  .logbox { max-height:220px; overflow-y:auto; font-size:12.5px; line-height:1.7; }
+  .logline { padding:2px 0; border-bottom:1px dashed #eee; }
+  .muted { color:#aaa; }
+  .p0text { color: var(--p0); }
+  .p1text { color: var(--p1); }
+  .helpText { font-size:12px; color:#888; line-height:1.6; margin-top:4px; }
+  #overlay { position:fixed; inset:0; background:rgba(0,0,0,0.45); display:none; align-items:center; justify-content:center; z-index:50; }
+  #overlay .modal { background:#fff; border-radius:12px; padding:28px; max-width:420px; text-align:center; }
+  #overlay .modal h2 { margin:0 0 10px; font-size:20px; }
+  #overlay .modal p { color:#555; font-size:14px; line-height:1.7; }
+  .productionChoices { display:flex; flex-wrap:wrap; gap:8px; justify-content:center; margin:14px 0; }
+  .phaseNote { font-size:12px; color: var(--accent-dark); background:#eefaf1; border:1px solid #cdeedb; border-radius:6px; padding:8px 10px; margin-bottom:10px; }
+  .depthChoice { margin:14px 0; text-align:left; }
+  .depthChoice label { font-size:13px; color:#555; display:block; margin-bottom:6px; }
+  .depthChoice select { font-family:inherit; font-size:13px; padding:6px 8px; border-radius:6px; border:1px solid #ccc; width:100%; }
+  .depthChoice .depthNote { font-size:11.5px; color:#999; margin-top:4px; line-height:1.5; }
+
+  /* ----- 生産(production)/配置・移動(placement)を色と枠で瞬時に見分けるためのスタイル -----
+     生産フェーズ: 青系。手番を消費せず、RPを払って手持ちに1体追加するだけの操作。
+     配置・移動フェーズ: 緑系。あなたの手番中で、盤上に実際に置く/動かす操作。
+     この2つを同じreserveArea内で使い回すため、混同を防ぐ目的で枠色・バッジ両方で常時明示する。 */
+  /* 2026-09-07修正: 生産フェーズの枠色が後手(橙)と紛らわしい「黄色」だった
+     ため、紫系(--prod-color)に変更（配置フェーズ(緑)との対比は維持）。 */
+  .panel.modeProduction { border:3px solid var(--prod-color); background:var(--prod-bg); }
+  .panel.modePlacement { border:3px solid var(--place-color); background:#f4fbf6; }
+  .panel.modeWaiting { border:3px solid #d1d5db; }
+  .phaseBadge { display:inline-block; font-size:11.5px; font-weight:700; padding:3px 10px; border-radius:999px; margin-bottom:8px; letter-spacing:0.02em; }
+  .phaseBadge.modeProduction { background:var(--prod-color); color:#fff; }
+  .phaseBadge.modePlacement { background:var(--place-color); color:#fff; }
+  .phaseBadge.modeWaiting { background:#9ca3af; color:#fff; }
+
+  /* ----- 2026-08-27追加: HP数値表示（build_tools.pyのSHOW_HP_NUMBERSオプション用） -----
+     2026-09-03修正: top:-13px（駒の外側・上方向）に置いていたため、盤面グリッドの
+     行間ギャップが2pxしかなく、1つ上の行のセルに数値がはみ出して重なり、
+     そのマスの駒のHPバー（セル下端）を隠してしまっていた。
+     HPバーのすぐ上（同じセル内）に収まるようbottom基準に変更し、はみ出しをなくす。 */
+  .hpNum { position:absolute; bottom:6px; left:50%; transform:translateX(-50%); font-size:9px; line-height:1.2;
+    color:#444; background:#fff; border:1px solid #ddd; padding:0 3px; border-radius:3px; white-space:nowrap; pointer-events:none; }
+
+  /* ----- 2026-08-27追加: 演出モード（自由配置・動画撮影用）パネルとダメージ演出ポップアップ ----- */
+  .directorPanel { border-color:#d99a2b; background:#fffaf0; }
+  .directorPanel h2 { color:#a06c1a; }
+  .directorRow { display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin-bottom:8px; }
+  .directorRow label { font-size:12px; color:#666; }
+  .directorRow input[type=number] { width:64px; font-family:inherit; font-size:12px; padding:4px 6px; border-radius:6px; border:1px solid #ccc; }
+  .directorRow select { font-family:inherit; font-size:12px; padding:4px 6px; border-radius:6px; border:1px solid #ccc; }
+  /* 2026-09-06追加: 「AIの思考中」表示をAIの持ち駒パネルの右側へ移設。 */
+  .aiReserveHeaderRow { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:10px; }
+  #aiThinkingIndicator { font-size:12px; color:#a06c1a; white-space:nowrap; }
+  .dmgPopup {
+    position:fixed; transform:translate(-50%,-50%); color:#c0392b; font-weight:800;
+    pointer-events:none; z-index:70; text-shadow: 0 0 3px #fff, 0 0 3px #fff, 0 0 3px #fff;
+    animation: dmgFloat 0.9s ease-out forwards;
+  }
+  @keyframes dmgFloat {
+    0%   { opacity:0;   transform:translate(-50%,-30%)  scale(0.6); }
+    15%  { opacity:1;   transform:translate(-50%,-65%)  scale(1.08); }
+    100% { opacity:0;   transform:translate(-50%,-150%) scale(1); }
+  }
+
+  /* ----- 2026-09-06追加: 生産パネルを独立した右端カラムに分離 -----
+     従来は配置・移動フェーズと同じ#mainPanel/#reserveAreaを生産フェーズでも
+     使い回していた（枠色バッジで区別するのみ）が、画面上でも完全に別カラムへ
+     切り分けてほしいという要望に対応。.layoutの3カラム目として一番右に置く。 */
+  .prodSide { min-width:220px; flex:0 0 240px; }
+  /* 2026-09-06修正: 「現在の手番」パネルが大きすぎてRP/VP表示(statrow)の
+     高さと揃っていなかったのを是正。説明文(caption)を廃止し、SVGを縮小、
+     余白も詰めて統計カード1行分の高さに近づける。 */
+  #turnWheelPanel { text-align:center; padding:8px 14px; }
+  #turnWheelPanel h2 { margin:0 0 1px; font-size:12px; }
+  #turnWheelRound { font-weight:400; color:#999; font-size:11px; }
+
+  /* ----- 2026-09-06追加/2026-09-07再修正(2回目): 現在フェーズの視覚化ホイール -----
+     【設計の変遷】(1)最初は「6点・周期3」、(2)次に「8点・周期2（配置・移動と
+     生産の2状態のみ、個々の手番では点を動かさない）」としたが、どちらも
+     誤りだった。ユーザーがtune_balance_search.py等の実装を示して指摘した
+     正しいラウンド構造（game.pyのGame.run()で実際に確認済み）は次の4段階:
+       先手配置 → 後手配置 → 戦闘解決 → 共同生産 → (次ラウンド)後手配置 →
+       先手配置 → 戦闘解決 → 共同生産 → ...
+     （alternate_initiative_each_roundにより手番順が偶数ラウンドで反転する
+     ため、2ラウンドで1周期＝8段階になる）。
+     円盤(#wheelDisc)には青(先手)半円・橙(後手)半円の背景の上に8つの点が
+     45度間隔で固定で乗っており、時計回りに回転する。円の上に固定された
+     逆三角形が「現在のフェーズ」を指し示す。
+     ・緑の点(4つ)＝配置フェーズ（先手用2つ・後手用2つ。個々の手番ごとに
+       別の点を指す＝手番が変わるたびに点が1つ進む）。
+     ・紫の点(2つ)＝共同生産フェーズ（先手・後手同時に解決されるため、
+       1ラウンドにつき点は1つだけ）。
+     ・赤の点(2つ、2026-09-07新設)＝戦闘解決フェーズ（1ラウンドにつき1回）。
+     点の角度は0/45/90...ではなく22.5度ずらしてある（青/橙の境界線が
+     135度・315度に固定されているため、ずらさないとちょうど2点が境界線上に
+     乗ってしまい「青4個・橙4個」に綺麗に分かれないため）。
+     8点の配置（時計回り、角度は「頂点=0度」基準）:
+       337.5度=先手配置(緑、開始点) → 292.5度=後手配置(緑) →
+       247.5度=戦闘解決(赤) → 202.5度=共同生産(紫) → 157.5度=後手配置(緑) →
+       112.5度=先手配置(緑) → 67.5度=戦闘解決(赤) → 22.5度=共同生産(紫) →
+       (337.5度に戻る)。
+     マーカーは真上(0度)に固定されているため、円盤をNdeg回転させると
+     「角度θの点が現在マーカーの位置に来る」条件はθ+N≡0 (mod360)。
+     上記8点はこの順に45度ずつ「戻る」向き（337.5→292.5→247.5→...）に
+     並んでいるため、wheelStepを1増やすたびにN=45*wheelStep+22.5だけ
+     回転させれば、マーカーは常に時計回りに点1つ分だけ進み、8ステップ
+     (=2ラウンド分)で元の位置に戻る。この回転式自体は2026-09-06の設計時から
+     変わっていない（wheelStepを「どのタイミングで・何回」増やすかという
+     増分ロジック側だけを、上記4段階の構造に合わせてproceedAfter()/
+     doCombatPhase()/startNextRound()で修正した。詳細は各関数直上参照）。 */
+  #turnWheelSvg { width:58px; height:68px; }
+  /* 2026-09-12修正: #wheelDisc固有のIDセレクタだったが、.statCenter向けの
+     ミニ版ホイール(#centerWheelDisc)にも同じtransition/transform-originが
+     必要になったため、共有クラス.wheelDiscRotorに切り替えた
+     （updateTurnWheel()が両方のidに同じ角度を書き込む）。 */
+  .wheelDiscRotor { transition: transform 0.6s ease; transform-origin: 60px 80px; }
+  .wheelDot { stroke:#fff; stroke-width:2; }
+  .wheelDot.turnDot { fill:var(--place-color); }
+  .wheelDot.prodDot { fill:var(--prod-color); }
+  .wheelDot.combatDot { fill:var(--combat-color); }
+  /* 2026-09-12追加: statCenter内のミニ回転ホイール。デスクトップでは
+     #turnWheelPanel側の等身大ホイールと重複表示になるため隠し、
+     スマホ幅(@media (max-width:760px))でだけ小さく表示する。 */
+  .centerWheelSvg { display:none; }
+
+  /* ============================================================
+     2026-09-12追加: スマホ幅対応レイアウト
+     ============================================================
+     課題: 元のレイアウトは「盤面(固定472px幅)＋情報カラム＋生産カラム」の
+     3カラム構成で、スマホ幅では①盤面自体が画面をはみ出す、②配置操作
+     (#mainPanel)と生産操作(#prodPanel)が別カラム（DOM上も別の.side）に
+     あるため、素直に縦積みするとその間にAIの持ち駒・ログ・演出モードといった
+     「毎ターン見る必要のない」パネルが挟まり、盤面と操作パネルを同時に
+     視界に収めにくい、という2つの問題があった。
+     「配置フェーズ・生産フェーズそれぞれの専用画面を別途開閉して確認する」
+     という往復操作はテンポを著しく損なうため論外だが（ユーザー指摘のとおり）、
+     幸いこのゲームは元々「配置操作と生産操作は同時には起こらない
+     （#mainPanel/#prodPanelは排他的にdisplay:none/blockが切り替わるだけ）」
+     設計になっているため、両パネルを画面上の同じ位置（盤面のすぐ下）に
+     並べて置けば、「開閉」という操作を一切増やさずに常時どちらか一方が
+     見えている状態を作れる。
+     方針:
+       1. display:contents を使い、.side（2つある）自身のボックスを消して
+          中身を.layout（CSS Gridに切り替える）の直接の子として展開する。
+          こうすることで、元は別々の.side/.prodSideに分かれていた
+          #mainPanel・#prodPanel・#turnWheelPanel等を、DOM構造を変えずに
+          orderプロパティだけで自由に並べ替えられる。
+       2. 並び順は「①現在の手番/ステータス→②盤面→③配置or生産パネル
+          （同じ位置に重ねて置き、表示中の方だけが見える）→④現在の手番
+          ホイール（コンパクト）→⑤AIの持ち駒・ログ（既定で折りたたみ）」。
+          ⑤は毎ターン確認する必要がある情報ではないため、既定で非表示にし、
+          #toggleSecondaryBtn（デスクトップでは常に非表示）で必要な時だけ
+          展開できるようにする。これにより「盤面＋現在の操作パネル」が
+          スクロールなしで同時に見える状態を優先的に確保する。
+       3. 盤面のマス目サイズを、フォントサイズ・駒サイズも含めて縮小し、
+          一般的なスマホ幅（375〜430px程度）に収まるようにする。
+     （検証: ヘッドレスブラウザでiPhone SE相当(375x667)のビューポートを
+      エミュレートし、横スクロールが発生しないこと・盤面と操作パネルが
+      同時に表示されることをスクリーンショットで確認済み。） */
+  .mobileOnly { display:none; }
+  @media (max-width: 760px) {
+    body { padding:10px 12px; }
+    .layout {
+      display:grid;
+      grid-template-columns: 1fr;
+      gap:6px;
+      justify-items:stretch;
+    }
+    /* .side自身のボックスを消し、中身を.layoutの直接の子として展開する
+       （2つある.side双方に適用。.prodSideもclass="side prodSide"のため
+       このセレクタに一致する）。 */
+    .layout > .side { display:contents; }
+    .side, .prodSide { min-width:0; max-width:none; flex:none; }
+
+    #boardWrap { order:2; margin:0 auto; }
+    /* margin-bottomは0にする（理由は下の#mainPanel, #prodPanelのコメントと同じ:
+       .layoutのgapと二重になるのを避ける）。 */
+    .statrow { order:1; margin-bottom:0; }
+    /* margin-bottomは0にする（.layoutが既にgap:10pxでグリッド項目間の
+       余白を確保しているため、ここでさらに margin-bottom を足すと
+       余白が二重になり縦方向を無駄に消費してしまう。デスクトップ側
+       （.layoutがflexで#mainPanel/#prodPanelにmargin-bottomが必要な
+       レイアウト）と挙動を分けるため、ここで明示的に0上書きする）。 */
+    #mainPanel, #prodPanel { order:3; margin-bottom:0; }
+    /* 2026-09-12追加/2026-09-12再修正(2回目): 生産フェーズ中は#prodPanelが
+       実際の操作パネルになるため、#mainPanel側の「アップキープ中です」という
+       案内・バッジ・持ち駒一覧はスマホでは重複表示になるだけなので隠す
+       （enterProductionPhase()/startNextRound()参照）。
+       再修正(2回目): パス・AIの持ち駒を確認・投了のボタン列は#actionBar
+       （直下参照）として#mainPanel/#prodPanelの外に切り出したため、
+       #mainPanel自体を丸ごと隠しても操作不能になる副作用はもう無い。
+       生産フェーズ中に「配置フェーズ用の中身がほぼ空の#mainPanelカード」が
+       #prodPanelの上に残って画面を圧迫していた（生産ボタンが1画面に
+       収まらない一因になっていた）ため、単純にまるごと隠す形に戻した。 */
+    #mainPanel.duringProduction { display:none; }
+    /* 2026-09-12追加: パス・AIの持ち駒を確認・投了ボタンの常設バー。
+       #mainPanel（配置フェーズ）・#prodPanel（生産フェーズ）のどちらとも
+       同じorder:3の直後（order:4）に置くことで、スマホの1カラム表示では
+       「今表示されている方の操作パネル＋このボタン列」が必ずひとまとまりの
+       塊になるようにする（配置フェーズ・生産フェーズのどちらでも同じ見え方
+       になる）。生産フェーズ中も#mainPanelのように隠れることはなく常に
+       表示・操作可能。 */
+    #actionBar { order:4; margin-bottom:8px; }
+    /* 2026-09-12追加: ラウンド数・現在フェーズ表示（回転ホイール込み）を
+       statrow中央(.statCenter)にも小さく表示するようにしたため、この
+       大きい方の回転ホイールパネルはスマホでは表示内容が重複する。
+       スマホでは隠し、デスクトップでは従来どおり常時表示のままにする。 */
+    #turnWheelPanel { display:none; }
+    .mobileOnly#toggleSecondaryBtn { display:block; order:6; margin-bottom:8px; font-size:12.5px; }
+    /* AIの持ち駒・ログ・演出モードは対局のテンポに必須ではない参照情報
+       なので、既定では折りたたんでおく（#toggleSecondaryBtnで開閉）。
+       なお「AIの持ち駒」自体は#aiReserveCheckBtn（常時表示）からいつでも
+       ポップアップで確認できるため、ここが折りたたまれていても支障はない。 */
+    #aiReservePanel, #logPanel { order:7; display:none; }
+    #directorPanel { order:8; }
+    body.showSecondaryPanels #aiReservePanel,
+    body.showSecondaryPanels #logPanel { display:block; }
+
+    /* 2026-09-12追加/2026-09-12再修正: statrow中央のラウンド数・現在フェーズ
+       表示を、スマホの狭い横幅（2つのstatcardの間）に収まるようさらに縮小する。
+       再修正: ミニ回転ホイール追加後、statCenterがstatcard2枚より縦に高く
+       なり(align-items:stretchでstatrow全体の高さがそれに引っ張られる)、
+       盤面・操作パネルがその分下へ押し出されて#actionBarが画面下にはみ出す
+       原因になっていた。「ラウンド」というラベル文言はここでは省略して
+       （数字とホイール・フェーズバッジだけで意味は伝わるため）1行分減らし、
+       statCenterの高さをstatcard側（3行分）に近づける。 */
+    .statCenter { min-width:44px; padding:4px 4px; gap:1px; }
+    .statCenter .label { display:none; }
+    .statCenter .bignum { font-size:14px; }
+    .statCenter .phaseBadge { font-size:9.5px; padding:2px 7px; }
+    /* 2026-09-12追加: 「現在フェーズの表示には回転ホイールの図も含む」との
+       指摘を受け、スマホ幅ではデスクトップ側で隠している#turnWheelPanelの
+       代わりに、このミニ版ホイールを表示する（元は58x68pxをviewBoxはそのまま
+       22x26px相当まで縮小。狭いstatCenterの横幅に収まるサイズ）。 */
+    .centerWheelSvg { display:block; width:22px; height:26px; margin:0; }
+    /* 2026-09-12追加: #helpText（持ち駒の選び方などの操作説明）は常設の
+       「遊び方・ルール説明」ボタンから常時読めるため、スマホ幅では省略して
+       縦方向の余白を#actionBar（常に押せる必要がある操作ボタン列）に回す。
+       #prodPhaseNoteArea（生産フェーズの説明文）も同じ理由で省略する。
+       #mainPanel/#prodPanel自体のpaddingもスマホ幅では少し詰め、生産フェーズの
+       選択ボタン列(#prodReserveArea)と#actionBarができるだけ1画面に収まる
+       ようにする。 */
+    #helpText, #prodPhaseNoteArea { display:none; }
+    #mainPanel, #prodPanel { padding:8px; }
+    /* 2026-09-12追加: 生産フェーズで選べる駒の種類が多い（購入可能な全種類が
+       並ぶため、配置フェーズの持ち駒より数が多くなりやすい）場合、
+       .reserveRowがflex-wrapで1〜2個/行にしかならず#prodReserveAreaが
+       縦に非常に長くなり、#actionBar（常時操作ボタン）が画面外へ大きく
+       はみ出す原因になっていた。スマホ幅では常に2列グリッドに固定して
+       行数を抑え、あわせてボタン自体の余白・文字サイズも詰めて
+       1行あたりの高さも縮小する（配置フェーズの#reserveAreaにも同じ
+       クラスを使っているため両方に効くが、選択肢が少ない配置フェーズ側は
+       元々収まっているので副作用はない）。 */
+    .reserveRow { display:grid; grid-template-columns:1fr 1fr; gap:4px; margin-bottom:4px; }
+    .reserveBtn { font-size:10.5px; padding:4px 6px; line-height:1.3; }
+    .reserveBtn .kindStats { font-size:8px; }
+    /* 同じ理由（生産フェーズの縦方向の余白削減）で、フェーズバッジ・見出し・
+       「生産しない」ボタンの余白もスマホ幅では少し詰める。 */
+    .phaseBadge { margin-bottom:4px; }
+    .panel h2 { margin:0 0 3px; }
+    #prodSkipBtn { padding:6px 12px; font-size:12px; }
+    /* 2026-09-12追加: #prodPhaseBadge（「🏭 生産フェーズ（手番を消費しません）」）は
+       statrow中央の#centerPhaseBadge（現在フェーズ表示）と内容が重複するため、
+       スマホ幅では省略し、その分の高さ（購入可能な駒の種類が多いときに
+       #actionBarが画面外に押し出される主因の一つ）を#prodReserveAreaに回す。
+       実際に押すべき操作を示す#prodPhaseTitle（「アップキープ：生産しますか？」）
+       は引き続き表示する。 */
+    #prodPhaseBadge { display:none; }
+
+    /* 盤面のマス目サイズを縮小（元は22px+48px×9+gap2px×9=472px幅）。
+       ここでは14px+32px×9+gap2px×9=320px幅にする（一般的なスマホの
+       ビューポート360〜430px幅に収まるサイズ）。 */
+    #boardGridOuter {
+      grid-template-columns: 14px repeat(9, 32px);
+      grid-template-rows: 14px repeat(9, 32px);
+      width:320px; height:320px;
+    }
+    .piece { width:26px; height:26px; font-size:11px; }
+    .cell { font-size:9px; }
+    .axisLabel { font-size:9px; }
+    .hpNum { font-size:7.5px; bottom:4px; padding:0 2px; }
+    #boardWrap.boardPhasePlacement #boardGridOuter,
+    #boardWrap.boardPhaseProduction #boardGridOuter,
+    #boardWrap.boardPhaseCombat #boardGridOuter { outline-width:2px; outline-offset:2px; }
+
+    .statcard { padding:8px; }
+    .bignum { font-size:17px; }
+    .topBar { font-size:12px; gap:10px; }
+  }
+  /* 極端に狭い画面（旧世代の小型端末等）向けにもう一段階縮小する。 */
+  @media (max-width: 360px) {
+    #boardGridOuter {
+      grid-template-columns: 12px repeat(9, 28px);
+      grid-template-rows: 12px repeat(9, 28px);
+      width:280px; height:280px;
+    }
+    .piece { width:22px; height:22px; font-size:10px; }
+    .statCenter { min-width:40px; padding:4px 2px; }
+    .statCenter .bignum { font-size:12.5px; }
+    .statCenter .label, .statCenter .phaseBadge { font-size:8.5px; }
+    .centerWheelSvg { width:20px; height:23px; }
+  }
+</style>
+</head>
+<body>
+<!-- 2026-09-08追加: タイトル画面。ページを開いた直後はこれだけが見えている状態にし、
+     「読み込めば勝手に対局準備画面(先手/後手選択)まで進む」という従来の挙動が
+     プレイヤーに伝わりにくかった点に対応する（詳細はtitlePlayBtn/howToPlayBtn
+     周辺のコメント参照）。Pythonエンジンの読み込み自体はバックグラウンドで
+     このタイトル画面表示中から始めておき、プレイヤーが▶を押した時点で
+     まだ読み込みが終わっていなければ、そこで初めて待たせる（先に押しておいて
+     もらえれば体感の待ち時間はほぼ無くなる）。 -->
+<div id="titleScreen" class="titleScreen">
+  <h1 id="pageH1">AI対戦モード（プロトタイプ）</h1>
+  <p class="subtitle" id="pageSubtitle">あなた vs AI（探索ベースAI）。対局開始時に先手/後手を選べます。ルールは game.py の実装を Pyodide 経由でそのまま実行しています。</p>
+  <p id="bootStatus" style="font-size:12px;color:#888;"></p>
+  <div class="titleActions">
+    <button class="mainBtn" id="titlePlayBtn">▶ <span id="titlePlayBtnLabel">プレイ開始</span></button>
+    <button class="ghostBtn" id="titleHowToBtn">📖 <span id="titleHowToBtnLabel">遊び方・ルール説明</span></button>
+    <!-- 2026-09-12追加: 実行時の表示言語切替ボタン。ボタン自体のラベルは
+         「切り替え先の言語名」（日本語表示中なら"English"、英語表示中なら
+         "日本語"）を直接出す方式にし、翻訳不要・一目で分かるようにする
+         （updateLangToggleLabel()参照）。対局開始前のタイトル画面限定。 -->
+    <button class="ghostBtn langToggleBtn" id="langToggleBtn">🌐 <span id="langToggleBtnLabel"></span></button>
+  </div>
+</div>
+
+<div id="gameScreen" style="display:none;">
+<!-- 2026-09-08修正: 演出モードのトグルを、ルール説明・棋譜ビューアーへの
+     リンクと合わせて1行の常設バーにまとめた（旧: 演出モードのトグルだけで
+     1行を占めていた）。対局中に消費する縦方向のスペースを減らす狙い
+     （0.96節・画面が100%表示だと操作しづらいという指摘への対応の一環）。 -->
+<div class="topBar">
+  <label>
+    <input type="checkbox" id="directorToggle"> <span id="directorToggleLabel">🎬 演出モード（自由配置・動画撮影用）</span>
+  </label>
+  <button class="ghostBtn" id="howToPlayBtn">📖 <span id="howToPlayBtnLabel">遊び方・ルール説明</span></button>
+  <a class="ghostBtn viewerLink" id="viewerLink" href="local_viewer.html">📼 <span id="viewerLinkLabel">棋譜ビューアーを開く</span></a>
+</div>
+
+<!-- 2026-09-08追加: チュートリアルモード用のヒント表示（updateTutorialHint()が
+     setBoardPhaseClass()から都度更新する）。通常時・対局開始直後3ラウンドを
+     過ぎた後は非表示のまま。 -->
+<p id="tutorialHint" class="tutorialHint" style="display:none;"></p>
+
+<div class="layout">
+  <div id="boardWrap">
+    <div id="boardGridOuter"></div>
+  </div>
+
+  <div class="side">
+    <div class="statrow">
+      <div class="statcard p0" id="statcard0">
+        <p class="label" id="statLabel0">あなた (青・先手)</p>
+        <p class="bignum" id="rp0">RP 0</p>
+        <p class="label" id="vp0">VP 0</p>
+      </div>
+      <!-- 2026-09-12追加: ラウンド数・現在フェーズの表示。RP/VP表示の真ん中に
+           置くことで、配置フェーズ(#mainPanel)や生産フェーズ(#prodPanel)の
+           縦幅がどう変わってもスクロールせず常に見えるようにする（詳細は
+           このすぐ上の.statCenter向けCSSコメント参照）。 -->
+      <div class="statCenter" id="statCenter">
+        <p class="label" id="centerRoundLabel">Round</p>
+        <p class="bignum" id="centerRoundNum">1</p>
+        <!-- 2026-09-12追加: 「現在フェーズの表示」には回転ホイールの図自体も
+             含めてほしいという指摘を受け、#turnWheelPanelの回転ホイールと
+             全く同じ構造・同じ角度計算のミニ版をここにも複製する。
+             #wheelDiscと同じ角度をJS側(updateTurnWheel())が.wheelDiscRotor
+             クラス経由で両方に反映する（回転ロジック自体はwheelStepという
+             単一の状態から計算するので、表示先が2箇所に増えても分岐しない）。
+             デスクトップでは#turnWheelPanel側の大きいホイールと重複するため
+             CSSで隠し（既定でcenterWheelSvgはdisplay:none）、スマホ幅
+             （@media (max-width:760px)）でだけ小さく表示する。 -->
+        <svg id="centerWheelSvg" class="centerWheelSvg" viewBox="0 0 120 140">
+          <polygon points="50,18 70,18 60,35" fill="#555"></polygon>
+          <g id="centerWheelDisc" class="wheelDiscRotor">
+            <path d="M28.18,48.18 A45,45 0 0,1 91.82,111.82 Z" fill="#378ADD"></path>
+            <path d="M91.82,111.82 A45,45 0 0,1 28.18,48.18 Z" fill="#EF9F27"></path>
+            <circle cx="60" cy="80" r="45" fill="none" stroke="#00000022" stroke-width="1.5"></circle>
+            <circle class="wheelDot prodDot" cx="77.22" cy="38.43" r="5"></circle>
+            <circle class="wheelDot combatDot" cx="101.57" cy="62.78" r="5"></circle>
+            <circle class="wheelDot turnDot" cx="101.57" cy="97.22" r="5"></circle>
+            <circle class="wheelDot turnDot" cx="77.22" cy="121.57" r="5"></circle>
+            <circle class="wheelDot prodDot" cx="42.78" cy="121.57" r="5"></circle>
+            <circle class="wheelDot combatDot" cx="18.43" cy="97.22" r="5"></circle>
+            <circle class="wheelDot turnDot" cx="18.43" cy="62.78" r="5"></circle>
+            <circle class="wheelDot turnDot" cx="42.78" cy="38.43" r="5"></circle>
+          </g>
+        </svg>
+        <div class="phaseBadge" id="centerPhaseBadge"></div>
+      </div>
+      <div class="statcard p1" id="statcard1">
+        <p class="label" id="statLabel1">AI (橙・後手)</p>
+        <p class="bignum" id="rp1">RP 0</p>
+        <p class="label" id="vp1">VP 0</p>
+      </div>
+    </div>
+
+    <div class="panel" id="mainPanel">
+      <div id="phaseBadge" class="phaseBadge"></div>
+      <h2 id="phaseTitle">ラウンド 1 - あなたの手番</h2>
+      <div id="phaseNoteArea"></div>
+      <div id="reserveArea"></div>
+      <!-- 2026-09-06: 生産しないボタンは#prodPanel(#prodSkipBtn、画面右端の
+           生産専用カラム)側へ移設した。生産はもう#mainPanel/#reserveAreaを
+           使い回さないため、ここには置かない。 -->
+      <p class="helpText" id="helpText">手持ちの駒を選んで盤上の空きマスをクリックすると配置、自分の駒をクリックすると移動先（緑枠）が選べます。</p>
+    </div>
+
+    <!-- 2026-09-12追加/2026-09-12再修正: パス・AIの持ち駒を確認・投了の各ボタンは
+         元々#mainPanel内にあったが、生産フェーズ中は#prodPanel（別の.side列
+         =.prodSide内）が実際の操作パネルになるため、スマホ幅で1カラムに
+         縦積みすると「操作ボタンは配置フェーズ用のカードの中、実際の生産
+         選択肢は別のカードの中」という分断が起き、生産フェーズの画面が
+         1画面にまとまらず生産ボタンが押しにくい、という指摘を受けた。
+         #mainPanel/#prodPanelから独立した常設バーに切り出し、CSS側で
+         「#mainPanel/#prodPanelの直後（どちらが表示中でもその直後）」に
+         常に配置することで、配置・生産どちらのフェーズでも「操作パネル＋
+         このボタン列」が1つの塊としてまとまるようにする
+         （@media (max-width:760px)の#actionBar参照）。
+         あえて.panelクラス（白背景・枠線・14px paddingのカード見た目）は
+         付けていない: 元々#mainPanel内にあった頃はボタンだけが単独の
+         カード枠を持っていなかったため、ここで新たにカード化すると
+         パディング・枠線・余白の分だけ縦方向を余計に消費し、ただでさえ
+         狭いスマホ画面で#actionBar自体が画面下にはみ出す原因になった。
+         プレーンなボタン列のまま（スタイルは下のCSS #actionBar 参照）にして
+         この余計な消費を避けている。 -->
+    <div id="actionBar">
+      <button class="ghostBtn" id="cancelBtn" style="display:none;">選択解除</button>
+      <button class="ghostBtn" id="passBtn">パス</button>
+      <!-- 2026-09-12追加: AIの持ち駒確認ボタン。パスボタンと投了ボタンの間の
+           空き（投了ボタンのmargin-left:autoで開いている隙間）に置く。
+           AIの持ち駒は毎ターン確認するものではないため、折りたたみ式の
+           #aiReservePanel（スマホでは既定で非表示）とは別に、いつでも1タップで
+           読み取り専用のポップアップ(#aiReserveOverlay)を開けるようにする。
+           画面遷移は挟まない（showAiReserveModal()参照）。#actionBar自体は
+           生産フェーズ中もスマホ幅でも隠されないため、常に押せる。 -->
+      <button class="ghostBtn" id="aiReserveCheckBtn">👁 <span id="aiReserveCheckBtnLabel">AIの持ち駒を確認</span></button>
+      <!-- 2026-09-12追加: 投了ボタン。手番に関係なく、対局が終わっていない
+           間はいつでも押せる（配置・移動フェーズでもAIの手番中・アップキープ中
+           でも、諦めたくなったタイミングは一定しないため）。 -->
+      <button class="ghostBtn" id="resignBtn" style="margin-left:auto; color:#c0392b; border-color:#e2b4ae;">投了</button>
+    </div>
+
+    <!-- 2026-09-12追加: スマホ幅（media query参照）専用のトグルボタン。
+         AIの持ち駒パネル・ログパネルは対局のテンポに関わる必須情報ではない
+         （参照用の情報）ため、スマホでは既定で折りたたみ、盤面と現在の
+         操作パネル（配置/生産）だけが常に画面に収まるようにする。
+         デスクトップでは常にdisplay:noneのまま（CSS側の
+         @media (max-width:760px)内でのみ表示する）。 -->
+    <button class="ghostBtn mobileOnly" id="toggleSecondaryBtn" style="width:100%;"></button>
+
+    <!-- 2026-08-14追加: AI側の持ち駒が画面のどこにも表示されておらず、
+         AIが生産・配置において異常な行動を取っていないか（例: 特定駒種に
+         偏って生産していないか、RPに見合わない駒を溜め込んでいないか）を
+         対局中に確認できなかったため追加。あなた側と同じ見た目だが、
+         クリック不可（閲覧専用）の表示にする。 -->
+    <div class="panel" id="aiReservePanel">
+      <div class="aiReserveHeaderRow">
+        <h2 id="aiReserveTitle" style="margin:0;">AIの持ち駒（閲覧用）</h2>
+        <span id="aiThinkingIndicator" style="display:none;"></span>
+      </div>
+      <div id="aiReserveArea"></div>
+    </div>
+
+    <div class="panel" id="logPanel">
+      <h2 id="logTitle">ログ</h2>
+      <label style="display:flex; align-items:center; gap:6px; font-size:13px; margin-bottom:6px;">
+        <input type="checkbox" id="aiDebugToggle"> <span id="aiDebugLabel">AIの候補手ログを表示（上位候補とスコア）</span>
+      </label>
+      <div class="logbox" id="logbox"></div>
+    </div>
+
+    <!-- 2026-08-27追加: 演出モード専用パネル。実際のPythonエンジンの
+         状態(gameId経由)には一切書き込まず、JS側のgs変数を演出用の
+         見た目だけのコピーに差し替えて操作する（切り替えて戻せば
+         本来の対局状態にそのまま復帰する）。 -->
+    <div class="panel directorPanel" id="directorPanel" style="display:none;">
+      <h2 id="directorPanelTitle">演出モード（自由配置・動画撮影用）</h2>
+      <p class="helpText" id="directorHelp">実際のゲーム進行とは独立した見た目だけの編集モードです。盤面のマスをクリックして選択し、下のコントロールで自由に駒を置いたりHPを書き換えたりできます。</p>
+      <div class="directorRow">
+        <select id="dirOwner"><option value="0">P0 (青)</option><option value="1">P1 (橙)</option></select>
+        <select id="dirKind"></select>
+        <button class="mainBtn" id="dirPlaceBtn">配置</button>
+        <button class="ghostBtn" id="dirClearBtn">空にする</button>
+      </div>
+      <div class="directorRow">
+        <label>HP</label>
+        <input type="number" id="dirHpInput">
+        <button class="ghostBtn" id="dirSetHpBtn">反映</button>
+        <button class="ghostBtn" id="dirDamageBtn">ダメージ演出 -50</button>
+      </div>
+      <div class="directorRow">
+        <label>P0 RP</label><input type="number" id="dirRp0">
+        <label>VP</label><input type="number" id="dirVp0">
+        <label>P1 RP</label><input type="number" id="dirRp1">
+        <label>VP</label><input type="number" id="dirVp1">
+        <button class="ghostBtn" id="dirApplyStatsBtn">反映</button>
+      </div>
+      <button class="ghostBtn" id="dirResetBtn">盤面を空にする</button>
+    </div>
+  </div>
+
+  <!-- 2026-09-06追加: 画面の一番右に分離した生産専用カラム。
+       上段: 現在の手番を視覚化する回転ホイール（常時表示）。
+       下段: 生産フェーズの選択UI（enterProductionPhase()実行中のみ表示）。 -->
+  <div class="side prodSide">
+    <div class="panel" id="turnWheelPanel">
+      <h2 id="turnWheelTitle"><span id="turnWheelTitleLabel">現在の手番</span> <span id="turnWheelRound"></span></h2>
+      <svg id="turnWheelSvg" viewBox="0 0 120 140">
+        <!-- 固定マーカー: 円の上に固定された逆三角形（回転しない） -->
+        <polygon points="50,18 70,18 60,35" fill="#555"></polygon>
+        <!-- 回転する円盤: 青(先手)半円・橙(後手)半円 + 8つの点。transformはJSが書き換える。
+             緑4点=配置フェーズ(先手用2つ・後手用2つ)、紫2点=共同生産フェーズ、
+             赤2点=戦闘解決フェーズ、45度間隔で固定配置。
+             点の角度は0/45/90...から22.5度ずらしてある（22.5/67.5/112.5...337.5度）。
+             青/橙の境界線が135度・315度の位置に固定されているため、ずらさずに
+             置くとちょうど2つの点が境界線上に乗ってしまい「4個ずつ」にならない。
+             2026-09-07再修正（ユーザーがtune_balance_search.py等の実装を示して
+             指摘、game.pyのGame.run()で実際に確認済み）: 1ラウンドは
+             「先手配置→後手配置→戦闘解決→共同生産」の4段階からなり、
+             このうち共同生産だけが先手・後手同時（点1つ）で、配置は
+             先手・後手それぞれ別の点、戦闘解決も専用の点を持つ。
+             時計回りの順序（337.5度の先手配置から開始、以下45度ずつ）:
+             先手配置(緑)→後手配置(緑)→戦闘解決(赤)→共同生産(紫)→
+             後手配置(緑)→先手配置(緑)→戦闘解決(赤)→共同生産(紫)→最初に戻る。
+             このHTML内の各<circle>は上から時計回りではなく角度の昇順
+             （22.5,67.5,...,337.5度）で並んでいる点に注意。回転式・
+             wheelStep増分ロジックの詳細はCSS側の#turnWheelSvg直上コメントと
+             updateTurnWheel()/proceedAfter()/doCombatPhase()/startNextRound()の
+             各コメントを参照。 -->
+        <g id="wheelDisc" class="wheelDiscRotor">
+          <path d="M28.18,48.18 A45,45 0 0,1 91.82,111.82 Z" fill="#378ADD"></path>
+          <path d="M91.82,111.82 A45,45 0 0,1 28.18,48.18 Z" fill="#EF9F27"></path>
+          <circle cx="60" cy="80" r="45" fill="none" stroke="#00000022" stroke-width="1.5"></circle>
+          <circle class="wheelDot prodDot" cx="77.22" cy="38.43" r="5" title="共同生産フェーズ"></circle>
+          <circle class="wheelDot combatDot" cx="101.57" cy="62.78" r="5" title="戦闘解決フェーズ"></circle>
+          <circle class="wheelDot turnDot" cx="101.57" cy="97.22" r="5" title="配置フェーズ"></circle>
+          <circle class="wheelDot turnDot" cx="77.22" cy="121.57" r="5" title="配置フェーズ"></circle>
+          <circle class="wheelDot prodDot" cx="42.78" cy="121.57" r="5" title="共同生産フェーズ"></circle>
+          <circle class="wheelDot combatDot" cx="18.43" cy="97.22" r="5" title="戦闘解決フェーズ"></circle>
+          <circle class="wheelDot turnDot" cx="18.43" cy="62.78" r="5" title="配置フェーズ"></circle>
+          <circle class="wheelDot turnDot" cx="42.78" cy="38.43" r="5" title="配置フェーズ"></circle>
+        </g>
+      </svg>
+    </div>
+
+    <div class="panel modeProduction" id="prodPanel" style="display:none;">
+      <div id="prodPhaseBadge" class="phaseBadge modeProduction"></div>
+      <h2 id="prodPhaseTitle"></h2>
+      <div id="prodPhaseNoteArea"></div>
+      <div id="prodReserveArea"></div>
+      <div style="margin-top:8px;">
+        <button class="ghostBtn" id="prodSkipBtn"></button>
+      </div>
+    </div>
+  </div>
+</div>
+</div><!-- /#gameScreen -->
+
+<div id="overlay">
+  <div class="modal" id="modalContent"></div>
+</div>
+
+<!-- 2026-09-08追加: 遊び方・ルール説明モーダル。タイトル画面・対局中いつでも
+     howToPlayBtn/titleHowToBtnから開ける（対局状態には触れない読むだけの画面）。 -->
+<div id="howToOverlay">
+  <div class="howToModal" id="howToModalContent"></div>
+</div>
+
+<!-- 2026-09-12追加: AIの持ち駒確認用ポップアップ。#aiReserveCheckBtn
+     （パス/投了ボタンの間、常時表示）からいつでも開ける読み取り専用の画面。
+     #overlay（先手/後手選択・対局終了）や#howToOverlay（ルール説明）とは
+     独立させ、対局の進行状況に一切触れずに開閉できるようにする。 -->
+<div id="aiReserveOverlay" style="position:fixed; inset:0; background:rgba(0,0,0,0.45); display:none; align-items:center; justify-content:center; z-index:62; padding:20px; box-sizing:border-box;">
+  <div class="howToModal" id="aiReserveModalContent" style="max-width:420px;">
+    <div class="aiReserveHeaderRow">
+      <h2 id="aiReserveModalTitle" style="margin:0;">AIの持ち駒（閲覧用）</h2>
+    </div>
+    <div id="aiReserveModalArea"></div>
+    <div class="closeRow"><button class="mainBtn" id="aiReserveModalCloseBtn">閉じる</button></div>
+  </div>
+</div>
+
+<!--@@PYTHON_SOURCES@@-->
+<script>
+// ============================================================================
+// このファイルはビルドスクリプト(build_play_vs_ai.py)が config.py / game.py /
+// heuristic_bot.py / search_bot_skeleton.py / web_api.py の中身を「そのまま」
+// 下の <script type="text/python-source"> ブロックへ流し込んで生成する。
+//
+// 2026-08-11大改修: これ以前のバージョンはゲームロジック・AI評価ロジックを
+// 丸ごとJSへ手作業で移植していたが、Python版と食い違う事故が繰り返し発生した
+// （直近では「後手を選ぶと初手にAIが理由なくpassする」不具合。原因は
+// SearchBotの探索中の生産判断ロジックがPython/JSで別実装になっていたこと）。
+// 以後はPyodide経由でgame.py本体をブラウザ上でそのまま実行し、JS側は
+// DOM描画とユーザー操作の橋渡しに徹する。これによりロジックの二重実装・
+// 反映漏れというバグの種類そのものが構造的に発生しなくなる。
+// ============================================================================
+
+// 2026-08-27追加: build_tools.pyがCLIフラグに応じてこのマーカー部分
+// （オブジェクトリテラルそのもの）をJSON.dumpsした値で置換する。
+// テンプレート単体で開いた場合のデフォルト値もここに残しておく
+// （未置換でも壊れないように。二重宣言を避けるため宣言は1行のみ）。
+var BUILD_OPTIONS = /*@@BUILD_OPTIONS@@*/{"locale": "ja", "show_hp_numbers": false, "director_mode_enabled": true};
+
+// ---------------- 駒の表示名（3.2節・4.2節の呼称表に対応。config.py/game.pyの
+// 内部キー名（歩兵・騎兵・重装兵・弓兵・工兵・本拠）は一切変更しない） ----------------
+const PIECE_DISPLAY = {
+  ja: {
+    "歩兵":   {full: "苔兵（こけへい）", short: "苔"},
+    "騎兵":   {full: "棘走（とげばしり）", short: "棘"},
+    "重装兵": {full: "岩守（いわもり）",   short: "岩"},
+    "弓兵":   {full: "毒舞（どくまい）",   short: "毒"},
+    "工兵":   {full: "根張（ねばり）",     short: "根"},
+    "本拠":   {full: "母岩（ぼがん）",     short: "母"},
+  },
+  en: {
+    "歩兵":   {full: "Mosskin",     short: "Mk"},
+    "騎兵":   {full: "Thornrunner", short: "Th"},
+    "重装兵": {full: "Stoneguard",  short: "Sg"},
+    "弓兵":   {full: "Venomspore",  short: "Vs"},
+    "工兵":   {full: "Rootbound",   short: "Rb"},
+    "本拠":   {full: "Motherstone", short: "Ms"},
+  },
+};
+function pieceLabel(kind){
+  const table = PIECE_DISPLAY[BUILD_OPTIONS.locale] || PIECE_DISPLAY.ja;
+  return (table[kind] || {full: kind}).full;
+}
+function pieceShort(kind){
+  const table = PIECE_DISPLAY[BUILD_OPTIONS.locale] || PIECE_DISPLAY.ja;
+  return (table[kind] || {short: "?"}).short;
+}
+// 2026-09-08追加: 「（3RP）」のような全角括弧付きコスト表記は英語ビルドだと
+// 半角の他の表記と見た目が揃わないため、ロケールに応じて括弧を切り替える。
+function costLabel(cost){
+  return BUILD_OPTIONS.locale === "en" ? ` (${cost}RP)` : `（${cost}RP）`;
+}
+
+// ---------------- UI文言（ja/en）。plai_vs_ai.html本体と英語版紹介用ビルドを
+// 同じテンプレートから生成するための対応表。 ----------------
+const UI_STRINGS = {
+  ja: {
+    pageTitle: "AI対戦モード（プロトタイプ）",
+    pageSubtitle: "あなた vs AI（探索ベースAI）。対局開始時に先手/後手を選べます。",
+    you: "あなた", ai: "AI", p0suffix: "青・先手", p1suffix: "橙・後手",
+    rp: "RP", vp: "VP", hp: "HP", atk: "ATK", moveLabel: "移動", rangeLabel: "射程",
+    roundTurnYou: (r, total) => `ラウンド ${r} / ${total} - あなたの手番`,
+    roundAiThinking: (r) => `ラウンド ${r} - AI思考中...`,
+    reserveEmpty: "手持ちの駒がありません（アップキープ時の生産で補充されます）",
+    aiReserveTitle: "AIの持ち駒（閲覧用）", aiReserveEmpty: "AIの手持ち駒はありません",
+    // 2026-09-12追加: パス/投了ボタンの間に常設した「AIの持ち駒を確認」ボタン
+    // （ポップアップで#aiReserveTitle/aiReserveEmptyと同じ内容を表示する）。
+    aiReserveCheckBtnLabel: "AIの持ち駒を確認",
+    logTitle: "ログ", aiDebugLabel: "AIの候補手ログを表示（上位候補とスコア）",
+    cancelBtn: "選択解除", passBtn: "パス", skipProdBtn: "生産しない",
+    // 2026-09-12追加: 投了ボタン。
+    resignBtn: "投了する", resignConfirm: "投了しますか？この対局はここで終了し、AIの勝利になります。",
+    // 2026-09-12追加: window.confirm()の代わりにページ内オーバーレイで
+    // 投了確認するためのボタン文言（showResignConfirm()参照）。
+    resignConfirmYesBtn: "投了する", resignConfirmNoBtn: "キャンセル",
+    youResignedReason: "あなたの投了により決着", aiResignedReason: "AIの投了により決着",
+    // 2026-09-12追加: AI思考中に想定外のエラーが起きた場合の表示
+    // （以前は「AI思考中」の表示のまま無言で止まって見える不具合があった）。
+    fatalErrorTitle: "エラーが発生しました",
+    fatalErrorBody: "対局の処理中に予期しないエラーが発生し、続行できなくなりました。お手数ですが、下のボタンからタイトル画面に戻ってやり直してください。この画面が繰り返し出る場合は、開発者にエラー内容（下記）をお伝えいただけると助かります。",
+    fatalErrorBackBtn: "タイトル画面に戻る",
+    // 2026-09-12追加: スマホ表示向け。AIの持ち駒・ログパネルの折りたたみトグル。
+    showSecondaryBtn: "▼ AIの持ち駒・ログを表示", hideSecondaryBtn: "▲ AIの持ち駒・ログを隠す",
+    helpText: "手持ちの駒を選んで盤上の空きマスをクリックすると配置、自分の駒をクリックすると移動先（緑枠）が選べます。",
+    prodModalTitle: "アップキープ: 生産しますか？",
+    prodModalBody: "RPを消費して駒を1体、手番を使わずに手持ちへ追加できます（下の一覧から選択、または「生産しない」）。",
+    phaseBadgeProduction: "🏭 生産フェーズ（手番を消費しません）",
+    phaseBadgePlacement: "⚔️ 配置・移動フェーズ（あなたの手番）",
+    phaseBadgeWaiting: "AIの手番です",
+    // 2026-09-06追加: アップキープ（生産フェーズ）中にmainPanel(配置フェーズ画面)側の
+    // バッジが誤って「AIの手番です」と表示されていた不具合の修正用の専用文言。
+    phaseBadgeUpkeep: "🏭 アップキープ中",
+    aiThinkingLabel: (r) => `🤔 思考中…（ラウンド ${r}）`,
+    sideChoiceTitle: "先手・後手を選んでください",
+    sideChoiceBody: "先手（青）は最初に盤面が空の状態で好きなマスを確保できます。後手（橙）は先手の手を見てから対応できます。<br>どちらが有利かはまだ検証中です。ぜひ試して確かめてください。",
+    difficultyLabel: "AIの強さ（難易度）",
+    difficultyNote: "「ふつう」が動作確認の基本設定です。「むずかしい」ほどAIは強くなりますが、1手あたりの考える時間が長くなります。",
+    difficultyEasy: "やさしい", difficultyNormal: "ふつう", difficultyHard: "むずかしい",
+    opponentLabel: "対戦相手",
+    opponentNote: "過去の世代のチャンピオンAIを選んで対戦できます（未選択なら現在のAI）。",
+    opponentDefaultOption: "既定（現在のAI）",
+    playFirst: "先手でプレイ（青）", playSecond: "後手でプレイ（橙）",
+    youWin: "あなたの勝ちです！", aiWin: "AIの勝ちです",
+    finalRoundLabel: "最終ラウンド", restartBtn: "もう一度遊ぶ",
+    vpSpotStartNote: "このラウンドからVPスポット（三々・天元）の得点加算が始まります。",
+    midgameStartNote: "このラウンドから隅の中盤解禁スポットが有効になります（RP収入UPの代わりに、占有中は毎ラウンドVPを同量消費します）。",
+    winReasons: {
+      base_destroyed: "本拠が撃破されました", vp_score: "累積VPで決着",
+      base_hp_tiebreak: "本拠残りHPでタイブレーク", total_hp_tiebreak: "盤上の合計HPでタイブレーク",
+      second_player_default: "同点のため後手勝利",
+    },
+    directorToggleLabel: "🎬 演出モード（自由配置・動画撮影用）",
+    directorPanelTitle: "演出モード（自由配置・動画撮影用）",
+    directorHelp: "実際のゲーム進行とは独立した見た目だけの編集モードです。盤面のマスをクリックして選択し、下のコントロールで自由に駒を置いたりHPを書き換えたりできます。",
+    turnWheelTitle: "現在のフェーズ",
+    turnWheelRound: (r) => `（ラウンド ${r}）`,
+    // 2026-09-12追加: RP/VP表示の真ん中に常設したラウンド数・現在フェーズ表示
+    // (.statCenter)用の短い文言。#turnWheelTitle/turnWheelRoundとは別に、
+    // 狭い幅でも収まる短い表現にする。
+    centerRoundLabel: "ラウンド",
+    centerPhasePlacement: "配置", centerPhaseProduction: "生産", centerPhaseCombat: "戦闘",
+    upkeepInProgressTitle: "アップキープ中（右の生産パネルをご確認ください）",
+    kifuDownloadBtn: "棋譜をダウンロード",
+    // 2026-09-12追加: 対局終了時の棋譜自動保存(localStorage)に失敗した場合の
+    // 案内文言（プライベートブラウジング等、稀なケース向け）。
+    kifuAutoSaveFailedNote: "この対局の自動保存に失敗しました（ブラウザの設定でlocalStorageが無効になっている可能性があります）。上の「棋譜をダウンロード」からファイルとして保存してください。",
+    // 2026-09-08追加: タイトル画面・遊び方説明・チュートリアルモード関連。
+    titlePlayBtn: "プレイ開始", titleHowToBtn: "遊び方・ルール説明",
+    howToPlayBtn: "遊び方・ルール説明", howToPlayTitle: "遊び方・ルール説明", howToCloseBtn: "閉じる",
+    viewerLinkLabel: "棋譜ビューアーを開く",
+    // 2026-09-12追加: タイトル画面の言語切替ボタン（ボタン自体には切り替え先の
+    // 言語名をそのまま表示するため、キー自体はここでは使わずswitchLocale()側で
+    // 固定文字列"日本語"/"English"を出す。この2つのキーはPython実行環境の
+    // 読み込み状況(#bootStatus)を言語切替後も正しい言語で出し直すためのもの）。
+    bootLoadingMsg: "Python実行環境を読み込み中...(初回のみ数秒かかります)",
+    bootLoadFailedPrefix: "Python実行環境の読み込みに失敗しました: ",
+    bootLoadFailedSuffix: "（コンソールに詳細を出力しています。ページを再読み込みしても直らない場合はネットワーク接続やCDNへのアクセス可否をご確認ください）",
+    bootPyodideMissingErr: "loadPyodideが見つかりません（Pyodide本体を読み込む<script>タグが抜けているか、CDNへの接続がブロックされている可能性があります）",
+    tutorialModeLabel: "🎓 チュートリアルモード（はじめての方向けのヒントを表示）",
+    tutorialModeNote: "オンにすると、対局開始前にルール説明を表示し、最初の数ラウンドの間、画面に簡単なヒントを表示します。",
+    tutorialStartBtn: "ルールを確認して対局を始める",
+    tutorialHintPlacement: "💡 緑の枠＝配置・移動フェーズ：持ち駒を選んで盤上に置くか、自分の駒を動かしましょう。",
+    tutorialHintCombat: "💡 赤の枠＝戦闘解決フェーズ：隣接する敵味方の駒が同時にダメージを与え合います。",
+    tutorialHintProduction: "💡 紫の枠＝共同生産（アップキープ）フェーズ：両陣営が同時にRPを払って駒を手持ちへ補充できます。",
+    actionPlace: (kind, pos) => `${kind} を ${pos} に配置`,
+    actionMove: (src, dst) => `${src} → ${dst} に移動`,
+    howToPlayBody: `
+      <h3>🎯 目的と盤面</h3>
+      <p>9×9の盤の上段・下段中央に、動かせない「母岩（本拠）」がそれぞれ置かれています。<b>相手の母岩のHPを0にすれば即座に勝利</b>です。盤上にはRPスポット・VPスポットという重要な拠点もあり、占領して資源を稼ぐことも勝敗を左右します（詳しくは後述の「スポット」の項目をご覧ください）。</p>
+      <h3>🔁 1ラウンドの流れ（4段階）</h3>
+      <ul>
+        <li><b>①配置・移動</b>：手番のプレイヤーが、まず生産（RPを払って駒を1体手持ちに追加。手番は消費しません）を選び、そのあと盤上の駒を1体「配置」または「移動」します（配置・移動それぞれにもRPが必要です。詳しくは次の「RPの使い道」をご覧ください）。</li>
+        <li><b>②相手の配置・移動</b>：もう片方のプレイヤーも同様に1手行います。</li>
+        <li><b>③戦闘解決</b>：両者の手が出そろった時点で、盤上の全ユニットの攻撃が一斉に処理されます。</li>
+        <li><b>④共同生産（アップキープ）</b>：両陣営が同時に、RPを払って駒を手持ちに追加できます（手番は消費せず、持ち駒の上限は9体）。</li>
+      </ul>
+      <p>④が終わると次のラウンドの①へ戻ります。画面右の回転ホイールが、今どの段階かを常に示します。</p>
+      <p>⚠️ <b>重要なルール</b>：戦闘で駒が撃破されて空いたマスには、次のターンの間、新たに駒を配置することも、他の駒をそこへ移動させることもできません（一時的に使用できないマスになります）。</p>
+      <h3>💰 RP（資源）の使い道</h3>
+      <p>RPは初期値5からスタートし、上限は10です（上限を超える分の収入は切り捨てられます）。何もしなくても<b>両プレイヤーとも毎ラウンド自動的に1RPが入ります</b>（RPスポット等を1つも持っていなくても入る、いわば基礎収入です）。このRPは主に次の3か所で消費します。</p>
+      <ul>
+        <li><b>①生産</b>：④共同生産（アップキープ）フェーズでRPを払い、駒を1体「手持ち（reserve）」に追加します。手持ちに追加されただけではまだ盤上にはいません。駒種ごとに生産コストが異なります（例：工兵は安く、騎兵・弓兵はやや高め）。</li>
+        <li><b>②配置</b>：手持ちの駒を盤上に置く際にも、別途RPが必要です（生産コストとは別の「配置コスト」で、駒種ごとに設定されています）。つまり1体の駒を戦力にするには、生産時と配置時の2回RPを払うことになります。</li>
+        <li><b>③移動</b>：盤上の駒を1回動かすたびに1RPを消費します。</li>
+      </ul>
+      <h3>🔄 先手・後手とABBA方式</h3>
+      <p>先手（青）・後手（橙）というプレイヤーの立場は対局中ずっと固定ですが、<b>実際に「どちらが先に手を打つか」は毎ラウンド入れ替わります</b>。並び方は次のようになります。</p>
+      <p>先手→後手→後手→先手→先手→後手→後手→先手…（ABBA・ABBAの繰り返し）</p>
+      <p>これは「後に打つ方が相手の手を見てから動けて有利」という不公平を、2ラウンドに1回入れ替えることで平均化するための仕組みです。</p>
+      <h3>🗺️ スポット（重要拠点）</h3>
+      <p>盤上にはRPスポット・VPスポット・ミッドゲームポイントという3種類の重要拠点があり、自分の駒がその上に乗って占領していれば毎ターン自動的に資源を獲得できます。</p>
+      <ul>
+        <li><b>RPスポット</b>（4-4の位置、盤上に計4か所）：占領している間、毎ターンRPを獲得できます。ただし占領を始めてから実際にRPを獲得し始めるまでには1ターンの猶予があります。</li>
+        <li><b>VPスポット</b>（3-3の位置4か所＋中央の天元）：占領している間、毎ターンVPを獲得できます。3-3の位置は1か所につき3VP、中央（天元）は5VPです。ただし得点が入り始めるのは4ターン目以降です。</li>
+        <li><b>ミッドゲームポイント</b>（2-2の位置、盤上に計4か所）：10ターン目以降に有効になります。占領している間、毎ターン2RPを獲得できますが、同時に獲得したRPと同じ量のVPを失います（RPが上限に達して切り捨てられた分については、VPは失いません）。</li>
+      </ul>
+      <h3>🪨 駒の紹介と三すくみ</h3>
+      <p>攻撃力は「隣接する（毒舞は射程内の）敵の数」で分割されて同時に与えられるため、複数の駒で囲むほど合計ダメージが増えます（囲碁の攻め合いに近い感覚です）。</p>
+      <ul>
+        <li><b>苔兵</b>：安くて扱いやすい主力</li>
+        <li><b>棘走</b>：高ATK・高機動だが打たれ弱い</li>
+        <li><b>岩守</b>：低火力だがHPが高い壁役</li>
+        <li><b>毒舞</b>：唯一の遠隔攻撃ユニット</li>
+        <li><b>根張</b>：RPスポットに駐留すると収入+1</li>
+      </ul>
+      <p>さらに「三すくみ」の相性があります：<b>苔兵→棘走→岩守→苔兵</b>の順に有利で、相性が成立する組み合わせはダメージが2倍になります。</p>
+      <h3>☠️ 例外：毒舞と根張</h3>
+      <p>毒舞の毒性の胞子攻撃は、<b>根張にだけは絶対に命中しません</b>。これは「毒への耐性」ではなく、根張が地面に薄く張り付くように広がった構造をしているため、そもそも毒舞に狙いを定められない（ダメージ分割の対象からまるごと除外される）という特殊な生態によるものです。根張が毒舞の射程内・隣接にいても、毒舞の攻撃は根張を無視して他の駒にだけダメージを振り分けます（他に対象がいなければ誰にもダメージは通りません）。</p>
+      <h3>🏆 勝敗</h3>
+      <p>相手の母岩を破壊すれば即座に勝利です。30ラウンドが終わっても決着しない場合は、①累積VP→②母岩の残りHP→③盤上の全駒HP合計→④後手の勝ち、の順でタイブレークされます。VPスポットに駐留していた駒が撃破されると、相手に30VPのボーナスが入るので守りには注意しましょう。</p>
+    `,
+  },
+  en: {
+    pageTitle: "VS AI Mode (Prototype)",
+    pageSubtitle: "You vs AI (search-based bot). Choose to go first or second at the start.",
+    you: "You", ai: "AI", p0suffix: "Blue / 1st", p1suffix: "Orange / 2nd",
+    rp: "RP", vp: "VP", hp: "HP", atk: "ATK", moveLabel: "Move", rangeLabel: "Range",
+    roundTurnYou: (r, total) => `Round ${r} / ${total} - Your turn`,
+    roundAiThinking: (r) => `Round ${r} - AI thinking...`,
+    reserveEmpty: "No pieces in reserve (produced during upkeep).",
+    aiReserveTitle: "AI Reserve (view only)", aiReserveEmpty: "AI has no pieces in reserve.",
+    // 2026-09-12 added: persistent "Check AI Reserve" button between Pass and Resign.
+    aiReserveCheckBtnLabel: "Check AI Reserve",
+    logTitle: "Log", aiDebugLabel: "Show AI candidate moves (top picks & scores)",
+    cancelBtn: "Cancel", passBtn: "Pass",
+    // 2026-09-12 added: resign button.
+    resignBtn: "Resign", resignConfirm: "Resign now? The match will end immediately as an AI win.",
+    // 2026-09-12 added: buttons for the in-page overlay confirmation that
+    // replaced window.confirm() (see showResignConfirm()).
+    resignConfirmYesBtn: "Resign", resignConfirmNoBtn: "Cancel",
+    youResignedReason: "Decided by your resignation", aiResignedReason: "Decided by the AI's resignation",
+    // 2026-09-12 added: shown if an unexpected error interrupts the match
+    // (previously the "AI thinking" indicator could get stuck forever with
+    // no visible error at all).
+    fatalErrorTitle: "Something went wrong",
+    fatalErrorBody: "An unexpected error interrupted the match. Please go back to the title screen and start a new game. If this keeps happening, please report the error details below to the developer.",
+    fatalErrorBackBtn: "Back to title screen",
+    // 2026-09-12 added: mobile-only collapse toggle for the AI reserve/log panels.
+    showSecondaryBtn: "▼ Show AI reserve & log", hideSecondaryBtn: "▲ Hide AI reserve & log",
+    helpText: "Pick a piece from reserve and click an empty tile to place it, or click your own piece to see its move options (green tiles).",
+    prodModalTitle: "Upkeep: Produce a piece?",
+    prodModalBody: "Spend RP to add one piece to your reserve without using your turn.",
+    skipProdBtn: "Skip production",
+    phaseBadgeProduction: "🏭 Production phase (doesn't use your turn)",
+    phaseBadgePlacement: "⚔️ Placement / Move phase (your turn)",
+    phaseBadgeWaiting: "AI's turn",
+    phaseBadgeUpkeep: "🏭 Upkeep in progress",
+    aiThinkingLabel: (r) => `🤔 Thinking… (Round ${r})`,
+    sideChoiceTitle: "Choose your side",
+    sideChoiceBody: "Player 0 (Blue) claims the first tile on an empty board. Player 1 (Orange) reacts to Player 0's move.<br>Which side is stronger is still under testing \u2014 try both!",
+    difficultyLabel: "AI Difficulty",
+    difficultyNote: "Normal is the tested baseline setting. Hard makes the AI stronger, but it takes longer to think each move.",
+    difficultyEasy: "Easy", difficultyNormal: "Normal", difficultyHard: "Hard",
+    opponentLabel: "Opponent",
+    opponentNote: "Play against a past generation's champion AI, or leave this on Default for the current build's AI.",
+    opponentDefaultOption: "Default (current AI)",
+    playFirst: "Play first (Blue)", playSecond: "Play second (Orange)",
+    youWin: "You win!", aiWin: "AI wins",
+    finalRoundLabel: "Final round", restartBtn: "Play again",
+    vpSpotStartNote: "VP spots (star points & tengen) start scoring from this round.",
+    midgameStartNote: "Corner spots unlock this round (extra RP income, but consume equal VP each round while occupied).",
+    winReasons: {
+      base_destroyed: "Motherstone destroyed", vp_score: "Decided by accumulated VP",
+      base_hp_tiebreak: "Tiebreak: remaining Motherstone HP", total_hp_tiebreak: "Tiebreak: total HP on board",
+      second_player_default: "Tie \u2014 2nd player wins",
+    },
+    directorToggleLabel: "\ud83c\udfac Director Mode (free placement, for recording)",
+    directorPanelTitle: "Director Mode (free placement, for recording)",
+    directorHelp: "A purely visual sandbox, independent from the real match state. Click a tile to select it, then use the controls below to place any piece or edit HP directly \u2014 handy for staging trailer shots.",
+    turnWheelTitle: "Current phase",
+    turnWheelRound: (r) => `(Round ${r})`,
+    // 2026-09-12 added: short labels for the round/phase indicator now
+    // docked in the middle of the RP/VP row (.statCenter).
+    centerRoundLabel: "Round",
+    centerPhasePlacement: "Placement", centerPhaseProduction: "Production", centerPhaseCombat: "Combat",
+    upkeepInProgressTitle: "Upkeep in progress (check the production panel on the right)",
+    kifuDownloadBtn: "Download Game Record",
+    // 2026-09-12 added: shown if the automatic localStorage save fails at
+    // game end (rare — e.g. private browsing).
+    kifuAutoSaveFailedNote: "Auto-save failed for this match (your browser may have local storage disabled). Please use \"Download Game Record\" above to save a file instead.",
+    // 2026-09-08 added: title screen / how-to-play / tutorial mode strings.
+    titlePlayBtn: "Play", titleHowToBtn: "How to Play",
+    howToPlayBtn: "How to Play", howToPlayTitle: "How to Play", howToCloseBtn: "Close",
+    viewerLinkLabel: "Open Match Viewer",
+    // 2026-09-12 added: boot status text for the language toggle button on
+    // the title screen (re-rendered in the newly selected language whenever
+    // the player switches while the Python engine is still loading/failed).
+    bootLoadingMsg: "Loading the Python engine... (first load only takes a few seconds)",
+    bootLoadFailedPrefix: "Failed to load the Python engine: ",
+    bootLoadFailedSuffix: " (see the browser console for details; if reloading the page doesn't help, please check your network connection and whether the CDN is reachable)",
+    bootPyodideMissingErr: "loadPyodide was not found (the <script> tag that loads Pyodide itself may be missing, or the connection to the CDN may be blocked)",
+    tutorialModeLabel: "\ud83c\udf93 Tutorial mode (show tips for first-time players)",
+    tutorialModeNote: "Shows the rules before the match starts, and adds short on-screen hints for the first few rounds.",
+    tutorialStartBtn: "Got it, let's play",
+    tutorialHintPlacement: "\ud83d\udca1 Green outline = Placement phase: place a piece from reserve, or move one of your own pieces.",
+    tutorialHintCombat: "\ud83d\udca1 Red outline = Combat resolution: adjacent units on both sides deal damage to each other at the same time.",
+    tutorialHintProduction: "\ud83d\udca1 Purple outline = Joint production (upkeep): both sides may spend RP to add a piece to reserve at the same time.",
+    actionPlace: (kind, pos) => `Place ${kind} at ${pos}`,
+    actionMove: (src, dst) => `Move ${src} \u2192 ${dst}`,
+    howToPlayBody: `
+      <h3>\ud83c\udfaf Objective &amp; Board</h3>
+      <p>The board is a 9\u00d79 grid. Each side has an immovable Motherstone (base) at the center of its back row. <b>Destroy the enemy Motherstone and you win instantly.</b> The board also has RP spots and VP spots \u2014 key points that generate resources for whoever holds them (see "Spots" below for details).</p>
+      <h3>\ud83d\udd01 One Round = 4 Phases</h3>
+      <ul>
+        <li><b>\u2460 Placement</b>: The active player may first produce (spend RP to add a piece to reserve \u2014 this doesn't use your turn), then place or move exactly one piece on the board (both placing and moving also cost RP \u2014 see "What RP is spent on" below).</li>
+        <li><b>\u2461 The other side's placement</b>: The other player does the same.</li>
+        <li><b>\u2462 Combat Resolution</b>: Once both sides have acted, every unit's attack resolves at the same time.</li>
+        <li><b>\u2463 Joint Production (Upkeep)</b>: Both sides may spend RP to add a piece to reserve at the same time (still no turn cost; reserve is capped at 9 pieces).</li>
+      </ul>
+      <p>After \u2463, the next round's \u2460 begins. The rotating wheel on the right always shows which phase you're in.</p>
+      <p>\u26a0\ufe0f <b>Important rule</b>: A tile where a piece was just destroyed in combat becomes temporarily unusable \u2014 for the next turn, no one can place a new piece there or move a piece onto it.</p>
+      <h3>\ud83d\udcb0 What RP Is Spent On</h3>
+      <p>Both players start with 5 RP, and RP is capped at 10 (income above the cap is lost). Even with no spots at all, <b>each player automatically gains 1 RP every round</b> \u2014 a baseline income everyone gets. RP is spent in three places:</p>
+      <ul>
+        <li><b>1. Production</b>: during the Joint Production (Upkeep) phase, spend RP to add one piece to your reserve. It isn't on the board yet \u2014 just available. Production cost varies by piece type (Rootbound is cheap; Thornrunner and Venomspore cost more).</li>
+        <li><b>2. Placement</b>: putting a piece from reserve onto the board costs RP too (a separate "placement cost", also piece-dependent) \u2014 so fielding one piece takes two RP payments: once to produce it, once to place it.</li>
+        <li><b>3. Movement</b>: moving a piece already on the board costs 1 RP per move.</li>
+      </ul>
+      <h3>\ud83d\udd04 Turn Order: the ABBA Pattern</h3>
+      <p>Your seat \u2014 Player 0 (Blue) or Player 1 (Orange) \u2014 stays fixed for the whole match (it decides base position, tie-break rules, etc.), but <b>the order in which the two sides actually act each round rotates</b>:</p>
+      <p>1st \u2192 2nd \u2192 2nd \u2192 1st \u2192 1st \u2192 2nd \u2192 2nd \u2192 1st \u2026 (an ABBA, ABBA\u2026 cycle)</p>
+      <p>Acting second lets you react to the opponent's move \u2014 an advantage in the adjacency-based combat below. Flipping the order every other round evens that advantage out over the match.</p>
+      <h3>\ud83d\uddfa\ufe0f Spots (Key Points)</h3>
+      <p>The board has three kinds of key points \u2014 RP spots, VP spots, and Midgame points. Holding one with your own piece earns you resources automatically, every round.</p>
+      <ul>
+        <li><b>RP spots</b> (the four 4-4 points): while you hold one, you gain RP every round. There's a one-round delay after you take control before the RP income actually starts.</li>
+        <li><b>VP spots</b> (the four 3-3 points, plus the center tengen): while you hold one, you gain VP every round \u2014 3 VP per 3-3 point, 5 VP at the center (tengen). VP scoring doesn't begin until round 4.</li>
+        <li><b>Midgame points</b> (the four 2-2 points): unlock starting round 10. Holding one nets +2 RP every round, but you simultaneously lose VP equal to the RP you just gained (RP lost to the reserve cap doesn't cost you any VP).</li>
+      </ul>
+      <h3>\ud83e\udea8 The Five Pieces &amp; the Rock-Paper-Scissors Triangle</h3>
+      <p>A unit's attack power is split evenly among every enemy in range at once (adjacent tiles, or within range for Venomspore) and dealt simultaneously \u2014 surrounding a target with more attackers increases the total damage it takes, much like a capturing race in Go.</p>
+      <ul>
+        <li><b>Mosskin</b>: cheap, general-purpose main force</li>
+        <li><b>Thornrunner</b>: high attack and mobility, but fragile</li>
+        <li><b>Stoneguard</b>: low damage but very tanky \u2014 your wall</li>
+        <li><b>Venomspore</b>: the only ranged attacker</li>
+        <li><b>Rootbound</b>: garrison an RP spot for +1 income</li>
+      </ul>
+      <p>They also form a triangle: <b>Mosskin beats Thornrunner, Thornrunner beats Stoneguard, Stoneguard beats Mosskin</b> \u2014 a favorable matchup doubles the damage dealt.</p>
+      <h3>\u2620\ufe0f The Exception: Venomspore vs. Rootbound</h3>
+      <p>Venomspore's poisonous spore attacks can <b>never hit Rootbound</b> \u2014 not resistance, but a full exclusion. Rootbound's flat, ground-hugging growth means Venomspore simply can't target it: whenever Rootbound is in range or adjacent, Venomspore's attack ignores it entirely and splits its damage among any other targets instead (if Rootbound is the only target in range, the attack lands on no one).</p>
+      <h3>\ud83c\udfc6 Winning</h3>
+      <p>Destroy the enemy Motherstone for an instant win. If neither base falls within 30 rounds, the match is decided in order by: (1) accumulated VP, (2) remaining Motherstone HP, (3) total HP on the board, (4) Player 1 (2nd) wins on a full tie. Losing a piece that's standing on a VP spot hands the opponent a 30 VP bonus, so defend them carefully.</p>
+    `,
+  },
+};
+function t(key){
+  const table = UI_STRINGS[BUILD_OPTIONS.locale] || UI_STRINGS.ja;
+  return (key in table) ? table[key] : (UI_STRINGS.ja[key] !== undefined ? UI_STRINGS.ja[key] : key);
+}
+
+// ---------------- 静的テキストへのUI_STRINGS適用（起動時に一度だけ呼ぶ） ----------------
+function applyLocaleStaticText(){
+  document.title = t("pageTitle");
+  document.getElementById("pageH1").textContent = t("pageTitle");
+  document.getElementById("pageSubtitle").textContent = t("pageSubtitle");
+  document.getElementById("aiReserveTitle").textContent = t("aiReserveTitle");
+  document.getElementById("logTitle").textContent = t("logTitle");
+  document.getElementById("aiDebugLabel").textContent = t("aiDebugLabel");
+  document.getElementById("cancelBtn").textContent = t("cancelBtn");
+  document.getElementById("passBtn").textContent = t("passBtn");
+  document.getElementById("resignBtn").textContent = t("resignBtn");
+  // 2026-09-12追加: RP/VP表示中央のラウンド数ラベルと、パス/投了ボタンの間の
+  // 「AIの持ち駒を確認」ボタン・そのポップアップのタイトル。
+  document.getElementById("centerRoundLabel").textContent = t("centerRoundLabel");
+  document.getElementById("aiReserveCheckBtnLabel").textContent = t("aiReserveCheckBtnLabel");
+  document.getElementById("aiReserveModalTitle").textContent = t("aiReserveTitle");
+  document.getElementById("aiReserveModalCloseBtn").textContent = t("howToCloseBtn");
+  updateSecondaryToggleLabel();
+  document.getElementById("helpText").textContent = t("helpText");
+  document.getElementById("directorToggleLabel").textContent = t("directorToggleLabel");
+  document.getElementById("directorPanelTitle").textContent = t("directorPanelTitle");
+  document.getElementById("directorHelp").textContent = t("directorHelp");
+  document.getElementById("turnWheelTitleLabel").textContent = t("turnWheelTitle");
+  if (!BUILD_OPTIONS.director_mode_enabled){
+    document.getElementById("directorToggle").parentElement.style.display = "none";
+  }
+  // 2026-09-08追加: タイトル画面・遊び方説明・棋譜ビューアーリンク。
+  document.getElementById("titlePlayBtnLabel").textContent = t("titlePlayBtn");
+  document.getElementById("titleHowToBtnLabel").textContent = t("titleHowToBtn");
+  document.getElementById("howToPlayBtnLabel").textContent = t("howToPlayBtn");
+  document.getElementById("viewerLinkLabel").textContent = t("viewerLinkLabel");
+  // 2026-09-12追加: 言語切替ボタンのラベル・#bootStatus（読み込み中/失敗表示）も
+  // 切替のたびに選び直した言語で出し直す。
+  updateLangToggleLabel();
+  renderBootStatus();
+}
+
+// 2026-09-12追加: タイトル画面の言語切替ボタン。プレイ開始前限定
+// （ユーザー要望: 「一番最初の立ち上げた時にプレイと遊び方のボタンが
+// 並んでいるところ」）。BUILD_OPTIONS.localeをビルド時の固定値から実行時に
+// その場で入れ替え、applyLocaleStaticText()を呼び直すだけで済む
+// （対局開始前はgs===nullで動的な対局画面の文言がまだ存在しないため、
+// 静的テキストの再適用だけで画面全体が正しい言語になる）。
+function switchLocale(newLocale){
+  BUILD_OPTIONS.locale = newLocale;
+  applyLocaleStaticText();
+}
+
+// ボタンのラベル自体は「今の言語」ではなく「切り替え先の言語名」を直接
+// 表示する（例: 日本語表示中は"English"、英語表示中は"日本語"）。
+// 言語名は翻訳を介さない固定文字列でよい（日本語という単語自体は
+// UI_STRINGS.enの中でも変わらない）。
+function updateLangToggleLabel(){
+  const el = document.getElementById("langToggleBtnLabel");
+  if (!el) return;
+  el.textContent = BUILD_OPTIONS.locale === "en" ? "日本語" : "English";
+}
+document.getElementById("langToggleBtn").onclick = () => {
+  switchLocale(BUILD_OPTIONS.locale === "en" ? "ja" : "en");
+};
+
+let pyodideReady = null;
+let webApi = null;
+let CONFIG = null;
+
+// 2026-09-12追加: #bootStatus（Python実行環境の読み込み状況）はinitEngine()の
+// 進行に応じて3状態（読み込み中/成功=空/失敗）を取るが、以前はここだけ
+// t()を介さずハードコードの日本語文言を直接書き込んでいたため、言語切替
+// ボタン(switchLocale())で切り替えてもこの部分だけ日本語のまま残っていた。
+// 現在の状態(bootStatusKind/bootStatusErrMsg)を覚えておき、言語切替時にも
+// renderBootStatus()で同じ状態を選び直した言語で再描画できるようにする。
+let bootStatusKind = null; // null(非表示) | "loading" | "error"
+let bootStatusErrMsg = "";
+function renderBootStatus(kind, errMsg){
+  if (kind !== undefined) { bootStatusKind = kind; bootStatusErrMsg = errMsg || ""; }
+  const statusEl = document.getElementById("bootStatus");
+  if (!statusEl) return;
+  if (bootStatusKind === "loading") statusEl.textContent = t("bootLoadingMsg");
+  else if (bootStatusKind === "error") statusEl.textContent = t("bootLoadFailedPrefix") + bootStatusErrMsg + t("bootLoadFailedSuffix");
+  else statusEl.textContent = "";
+}
+
+async function initEngine(){
+  renderBootStatus("loading");
+  try {
+    if (typeof loadPyodide !== "function") {
+      throw new Error(t("bootPyodideMissingErr"));
+    }
+    const pyodide = await loadPyodide();
+
+    // 2026-08-22追加: py-scoring-common (scoring_common.py)。9章-10対応で
+    // heuristic_bot.py/search_bot_skeleton.pyの低レベル評価関数群を切り出した先。
+    // build_play_vs_ai.py側のPYTHON_SOURCESとこの配列は必ず対応させること。
+    const sourceIds = ["py-config", "py-weights", "py-scoring-common", "py-game", "py-heuristic-bot", "py-search-bot-skeleton", "py-web-api"];
+    for (const id of sourceIds){
+      const filename = "/" + id.replace("py-", "").replace(/-/g, "_") + ".py";
+      pyodide.FS.writeFile(filename, document.getElementById(id).textContent);
+    }
+    await pyodide.runPythonAsync(`
+import sys
+sys.path.insert(0, "/")
+import web_api
+`);
+    webApi = pyodide.pyimport("web_api");
+    CONFIG = JSON.parse(webApi.config_json());
+    renderBootStatus(null);
+    return pyodide;
+  } catch (err) {
+    // 2026-08-12追加: 以前はここで例外が起きると「読み込み中...」の表示のまま
+    // 無言で固まり、実際には何が起きているのか画面から一切分からなかった
+    // （実例: Pyodide本体のscriptタグが抜けていたため loadPyodide が
+    // 未定義関数の呼び出しとして失敗し、先手/後手選択画面へ永遠に進めなかった）。
+    console.error("initEngine failed:", err);
+    renderBootStatus("error", err.message);
+    throw err;
+  }
+}
+
+// ---------------- webApiラッパー（JSON文字列⇔JSオブジェクトの変換だけ担当） ----------------
+function apiNewGame(){ return webApi.new_game(); }
+function apiNewBot(depth, k, weightsJson){ return webApi.new_bot(depth, k, weightsJson ?? null); }
+function apiBeginRound(gameId){ return webApi.begin_round(gameId).toJs({dict_converter: Object.fromEntries}); }
+function apiState(gameId){ return JSON.parse(webApi.state_json(gameId)); }
+function apiValidActions(gameId, player){ return JSON.parse(webApi.valid_actions_json(gameId, player)); }
+function apiApplyAction(gameId, player, action){ webApi.apply_action(gameId, player, JSON.stringify(action)); }
+function apiAiChoose(gameId, botId, player){ return JSON.parse(webApi.ai_choose_json(gameId, botId, player)).action; }
+function apiAiChooseWithDebug(gameId, botId, player){ return JSON.parse(webApi.ai_choose_with_debug_json(gameId, botId, player)); }
+function apiResolveRoundEnd(gameId){ return JSON.parse(webApi.resolve_round_end(gameId)); }
+function apiAffordableProduction(gameId, player){ return JSON.parse(webApi.affordable_production_kinds_json(gameId, player)); }
+function apiApplyProduction(gameId, player, kind){ const r = webApi.apply_production(gameId, player, kind); return r === undefined ? null : r; }
+function apiAiChooseProduction(gameId, botId, player){ const r = webApi.ai_choose_production(gameId, botId, player); return r === undefined ? null : r; }
+// 2026-09-06追加: 対局後に棋譜(kifu_data_*.json互換フォーマット)を生成する機能。
+function apiKifuJson(gameId, bot0Label, bot1Label){ return webApi.kifu_json(gameId, bot0Label, bot1Label); }
+// 2026-09-06追加: そのラウンドの棋譜エントリを確定させる。produced引数は
+// {0: kindまたはnull, 1: kindまたはnull} 形式で渡す（内部でJSON文字列化する）。
+// resolve_round_end() → (AI/人間の生産フェーズ) → このfinalize、の順で呼ぶこと。
+function apiFinalizeRoundKifu(gameId, produced){ webApi.finalize_round_kifu(gameId, JSON.stringify(produced || {})); }
+// 2026-09-12追加: 投了ボタン用。
+function apiResign(gameId, player){ webApi.resign(gameId, player); }
+
+// ---------------- 純粋な表示ヘルパー（ゲームルールを一切含まない） ----------------
+const key = (x, y) => x + "," + y;
+// 2026-08-27: 駒の表示名はPIECE_DISPLAY（pieceLabel/pieceShort）に統一したため、
+// 旧来のKIND_LABEL（機械的な日本語1文字表記）はここでは使わない。
+const OWNER_COLOR = ["var(--p0)", "var(--p1)"];
+const OWNER_BG = ["var(--p0-bg)", "var(--p1-bg)"];
+
+// ---------------- 対局状態（すべてPython側の状態のローカルミラー。ここでは書き換えない） ----------------
+let gameId = null;
+let aiId = null;
+let gs = null; // apiState()の結果をそのまま持つ。renderの度に取り直す。
+let humanPlayer = 0;
+// 0.95節で検証の基本値としてdepth2に変更（旧0.77節のdepth3既定は非同期対戦の
+// 運用コスト実測を踏まえて撤回）。既定はdepth2とし、対局開始画面の
+// プルダウンで変更できるようにする（全検証ファイル共通でdepthを可変にする方針）。
+let aiDepth = 2;
+// 2026-09-04追加: candidate_kもdepthと同様、対局開始画面から個別に設定できるようにする。
+// 既定10はSearchBotコンストラクタの既定値・従来のapiNewBot呼び出しと合わせている。
+let aiCandidateK = 10;
+// 2026-09-01追加: 対戦相手の重み設定選択（player_vs_ai最初の対戦相手選択機能）。
+// null = 既定（現在のweights.py。webApi.new_bot側もNoneでグローバルHEURISTIC_WEIGHTSを使う）。
+// それ以外はBUILD_OPTIONS.champion_history中の該当エントリのweights辞書（generate_kifu.pyと
+// 同じ命名規則＝ディレクトリ・拡張子なしの"gen_XXXX"がname）。
+let aiOpponentWeights = null;
+// 2026-09-08追加: チュートリアルモード（対局開始画面のチェックボックスで選択）。
+// ONの場合、対局開始直後に遊び方説明を必ず一度表示し、最初の数ラウンドの間
+// updateTutorialHint()が画面にヒントを出す。
+let tutorialMode = false;
+let mode = null; // 'place' | 'move' | null
+let selectedKind = null; // reserve配列のindex
+let selectedSrc = null;
+let highlightSet = new Set();
+let humanTurnActive = false;
+let humanValidActions = []; // 人間の手番開始時に取得。ハイライト計算はこれをフィルタするだけ（幾何計算をJSで再実装しない）。
+let roundActionsThisRound = {};
+// 2026-09-06追加/2026-09-07再修正(2回目): 現在フェーズを視覚化する回転ホイール用の
+// 「フェーズ切替回数」カウンタ。1ラウンドは「先手配置→後手配置→戦闘解決→
+// 共同生産」の4段階からなり、この4つの切替タイミングそれぞれで+1する
+// （計4回/ラウンド。以前は「配置・移動フェーズ全体」を1つの状態として
+// 扱い2回/ラウンドしか増やしていなかったが、これは誤りだった。個々の
+// 手番＝先手/後手それぞれの1手ごとに実際に点は動く）。増加箇所は
+// proceedAfter()（先手→後手の手番切替、および後手手番終了→戦闘解決の
+// 2箇所）とdoCombatPhase()（戦闘解決→共同生産）とstartNextRound()
+// （共同生産→次ラウンド最初の配置）の計4箇所。
+// 一時的なオフセットは一切使わない。回転角=45*wheelStep+22.5(度)。
+// 詳細はupdateTurnWheel()直上のコメント参照。
+let wheelStep = 0;
+// 2026-09-06追加: 対局後の棋譜生成用に、bot0/bot1のラベルを対局開始時に確定させておく。
+let kifuBotLabels = ["human", "AI"];
+
+function vpStarKeys(){ return new Set(CONFIG.vp_spots.stars.map(p=>key(p[0],p[1]))); }
+function vpTengenKeys(){ return new Set(CONFIG.vp_spots.tengen.map(p=>key(p[0],p[1]))); }
+function econKeys(){ return new Set(CONFIG.rp_spots.points.map(p=>key(p[0],p[1]))); }
+function midgameKeys(){ return new Set(CONFIG.midgame_spots.points.map(p=>key(p[0],p[1]))); }
+
+function getPieceAt(x, y){
+  return gs.pieces.find(p => p.pos[0]===x && p.pos[1]===y) || null;
+}
+function getBanAt(x, y){
+  return gs.placementBan.find(b => b.pos[0]===x && b.pos[1]===y) || null;
+}
+
+function addLog(html){
+  const box = document.getElementById("logbox");
+  const div = document.createElement("div");
+  div.className = "logline";
+  div.innerHTML = html;
+  box.insertBefore(div, box.firstChild);
+}
+
+function fmtPos(pos){ return "(" + (pos[0]+1) + "," + (pos[1]+1) + ")"; }
+
+// 2026-09-08修正: 英語ビルドでも駒名・接続詞（「を」「に配置」等）がJapanese
+// のまま出力されていた不具合を修正（action.kindは内部キーのままだったため
+// pieceLabel()で表示名に変換し、文言自体もUI_STRINGSのactionPlace/actionMove
+// 経由で言語ごとに切り替える）。
+function actionLabel(action, player){
+  const cls = player===0 ? "p0text" : "p1text";
+  const name = player===humanPlayer ? t("you") : t("ai");
+  const who = `<span class="${cls}">${name}</span>`;
+  if (action.type === "place") return `${who}: ${t("actionPlace")(pieceLabel(action.kind), fmtPos(action.pos))}`;
+  if (action.type === "move") return `${who}: ${t("actionMove")(fmtPos(action.src), fmtPos(action.dst))}`;
+  return `${who}: ${t("passBtn")}`;
+}
+
+function formatActionForLog(a){
+  if (a.type === "place") return `('place', '${a.kind}', (${a.pos[0]},${a.pos[1]}))`;
+  if (a.type === "move") return `('move', (${a.src[0]},${a.src[1]}), (${a.dst[0]},${a.dst[1]}))`;
+  return "('pass',)";
+}
+
+// ---------------- 盤面描画 ----------------
+function cellSpecialClass(x,y){
+  const k = key(x,y);
+  if (vpTengenKeys().has(k)) return "tengen";
+  if (vpStarKeys().has(k)) return "star";
+  if (econKeys().has(k)) return "econ";
+  if (midgameKeys().has(k)){
+    const active = gs && gs.round >= CONFIG.midgame_spots.start_round;
+    return active ? "midgame" : "midgame-inactive";
+  }
+  return "";
+}
+
+function buildBoardSkeleton(){
+  const outer = document.getElementById("boardGridOuter");
+  outer.innerHTML = "";
+  outer.appendChild(document.createElement("div"));
+  for (let x=0;x<9;x++){
+    const lab = document.createElement("div");
+    lab.className = "axisLabel";
+    lab.textContent = x+1;
+    outer.appendChild(lab);
+  }
+  for (let y=0;y<9;y++){
+    const rowLab = document.createElement("div");
+    rowLab.className = "axisLabel";
+    rowLab.textContent = y+1;
+    outer.appendChild(rowLab);
+    for (let x=0;x<9;x++){
+      const cell = document.createElement("div");
+      cell.id = "cell_"+key(x,y);
+      cell.className = "cell " + cellSpecialClass(x,y);
+      cell.onclick = () => onCellClick(x,y);
+      outer.appendChild(cell);
+    }
+  }
+}
+
+function renderBoard(){
+  for (let y=0;y<9;y++) for (let x=0;x<9;x++){
+    const cell = document.getElementById("cell_"+key(x,y));
+    cell.innerHTML = "";
+    let cls = "cell " + cellSpecialClass(x,y);
+    const k = key(x,y);
+    if (highlightSet.has(k)) cls += " selectable";
+    if (selectedSrc && selectedSrc[0]===x && selectedSrc[1]===y) cls += " selectedSrc";
+    const ban = getBanAt(x,y);
+    if (ban && ban.round === gs.round) cls += " banned";
+    cell.className = cls;
+
+    const piece = getPieceAt(x,y);
+    if (piece){
+      const div = document.createElement("div");
+      div.className = "piece";
+      div.style.background = OWNER_BG[piece.owner];
+      div.style.border = "2px solid " + OWNER_COLOR[piece.owner];
+      div.style.color = OWNER_COLOR[piece.owner];
+      const kindSpan = document.createElement("span");
+      kindSpan.textContent = pieceShort(piece.kind);
+      div.appendChild(kindSpan);
+      // 2026-08-27追加: HP数値表示（build_tools.py --show-hp-numbers）。
+      // 常設のHPバー（帯グラフ）はそのまま残し、数値は駒の上に小さく重ねる。
+      if (BUILD_OPTIONS.show_hp_numbers){
+        const hpNum = document.createElement("div");
+        hpNum.className = "hpNum";
+        hpNum.textContent = piece.hp + "/" + piece.maxHp;
+        div.appendChild(hpNum);
+      }
+      const bar = document.createElement("div");
+      bar.className = "hpbar";
+      const inner = document.createElement("div");
+      inner.className = "hpbar-inner";
+      const pct = Math.max(0, Math.round((piece.hp/piece.maxHp)*100));
+      inner.style.width = pct + "%";
+      inner.style.background = OWNER_COLOR[piece.owner];
+      bar.appendChild(inner);
+      div.appendChild(bar);
+      cell.appendChild(div);
+    }
+  }
+}
+
+// ---------------- 2026-09-06追加/2026-09-07再修正(2回目): 現在フェーズの視覚化ホイール ----------------
+// 【設計の変遷】(1)8点・「生産フェーズ中だけ一時オフセット」方式→点が飛んで見える
+// 不具合。(2)8点・周期2（配置・移動と生産の2状態のみ、個々の手番では点を動かさない）
+// →ユーザーがtune_balance_search.py等の実装を示して指摘したとおり誤りだった。
+// 【現在の設計(2026-09-07・2回目の修正)】game.pyのGame.run()で実際に確認した
+// 正しいラウンド構造は次の4段階: 先手配置→後手配置→戦闘解決→共同生産
+// （alternate_initiative_each_roundにより手番順が偶数ラウンドで反転するため、
+// 2ラウンドで1周期＝8段階）。8点を45度間隔で固定配置し、緑(配置。先手用2つ・
+// 後手用2つ)、紫(共同生産。先手後手同時なので1ラウンド1点)、赤(戦闘解決。
+// 2026-09-07新設)を並べる。点の角度は0/45/90...ではなく22.5度ずらした
+// 22.5/67.5/112.5/157.5/202.5/247.5/292.5/337.5度（理由はCSS側のコメント・
+// SVGの各<circle>のコメント参照。青/橙の境界線が135度・315度に固定されて
+// いるため、ずらさないと2点が境界線上に乗ってしまう）。
+// マーカー(逆三角形)は円の外・真上(0度)に固定されているため、円盤をNdeg回転
+// させると「基準角θの点が現在マーカーの位置に来る」条件はθ+N≡0 (mod360)。
+// 337.5度(先手配置の開始点)から45度ずつ「戻る」向きに点を配置している
+// （337.5→292.5→247.5→…）ことになるので、wheelStepを1増えるたびに
+// N=45*wheelStep+22.5だけ回転させると、マーカーは常に時計回りに点1つ分だけ
+// 進み、8ステップ(=2ラウンド分)で元の位置に戻る。この回転式自体は最初の設計
+// から変わっていない（2026-09-07の修正はSVGの点の色割り当てと、wheelStepを
+// 増やすタイミング・回数の側だけを4段階モデルに合わせて直した。増分ロジックの
+// 詳細はproceedAfter()/doCombatPhase()/startNextRound()の各コメント参照）。
+// 一時的なオフセットは一切使わない。角度をmod360せずそのまま累積させているのは、
+// CSSのtransform:rotate()は360度を超えても正しく解釈され、かつパッと巻き戻る
+// のではなく常に時計回りへ滑らかに回り続けるアニメーションになるため
+// （見た目の意図に合う）。
+function updateTurnWheel(){
+  const rot = "rotate(" + (wheelStep * 45 + 22.5) + "deg)";
+  const disc = document.getElementById("wheelDisc");
+  if (disc) disc.style.transform = rot;
+  // 2026-09-12追加: statCenter内のミニ版ホイール(#centerWheelDisc)も同じ
+  // wheelStepから同じ角度で回す（表示先が増えても回転ロジック自体は
+  // 単一のwheelStepのまま分岐させない）。
+  const centerDisc = document.getElementById("centerWheelDisc");
+  if (centerDisc) centerDisc.style.transform = rot;
+}
+
+// 2026-09-07追加/2026-09-07再修正(2回目): local_viewer_template.htmlとの表示
+// 統一のため、盤面自体にも現在のフェーズ（配置=緑／生産=紫／戦闘解決=赤・
+// 2026-09-07新設）を示す枠(outline)をつける。setPanelMode()の"modeWaiting"
+// （AIの手番中の中立表示）とは独立させている（AIの手番中でも配置フェーズ自体は
+// 変わらないため、盤面の枠は緑のままでよい）。#turnWheelPanelのwheelStepと
+// 同じタイミング（proceedAfter()の手番切替・戦闘解決開始時、doCombatPhase()の
+// 共同生産開始時、startGameAs()/startNextRound()の配置フェーズ開始時）で呼ぶ。
+function setBoardPhaseClass(phase){
+  const wrap = document.getElementById("boardWrap");
+  if (!wrap) return;
+  wrap.classList.remove("boardPhasePlacement", "boardPhaseProduction", "boardPhaseCombat");
+  if (phase === "production") wrap.classList.add("boardPhaseProduction");
+  else if (phase === "combat") wrap.classList.add("boardPhaseCombat");
+  else wrap.classList.add("boardPhasePlacement");
+  updateTutorialHint(phase);
+  updateCenterPhaseBadge(phase);
+}
+
+// 2026-09-12追加: RP/VP表示(statrow)の真ん中に常設したラウンド数・現在フェーズ
+// 表示のうち、フェーズ側の更新。setBoardPhaseClass()と全く同じ呼び出し
+// タイミング（配置=緑／生産=紫／戦闘解決=赤の切り替えと同時）で更新することで、
+// 盤面の枠色と表示内容が食い違わないようにする（ラウンド数側はupdateStats()が
+// gsの更新のたびに更新する）。
+function updateCenterPhaseBadge(phase){
+  const badge = document.getElementById("centerPhaseBadge");
+  if (!badge) return;
+  badge.classList.remove("modePlacement", "modeProduction", "modeCombat");
+  let cls, key;
+  if (phase === "production"){ cls = "modeProduction"; key = "centerPhaseProduction"; }
+  else if (phase === "combat"){ cls = "modeCombat"; key = "centerPhaseCombat"; }
+  else { cls = "modePlacement"; key = "centerPhasePlacement"; }
+  badge.classList.add(cls);
+  badge.textContent = t(key);
+}
+
+// 2026-09-08追加: チュートリアルモード用の簡易ヒント。フル機能の誘導ツアーでは
+// なく、盤面の枠色が切り替わるたび（setBoardPhaseClass()呼び出しのたび）に
+// 「今どのフェーズで、何をする場面か」を短く言い添えるだけの軽量な仕組み。
+// 対局開始から3ラウンドを過ぎたら（慣れてきた頃合いとして）自動的に消える。
+function updateTutorialHint(phase){
+  const el = document.getElementById("tutorialHint");
+  if (!el) return;
+  if (!tutorialMode || !gs || gs.round > 3){
+    el.style.display = "none";
+    return;
+  }
+  const key = phase === "production" ? "tutorialHintProduction"
+    : phase === "combat" ? "tutorialHintCombat"
+    : "tutorialHintPlacement";
+  el.textContent = t(key);
+  el.style.display = "block";
+}
+
+function updateStats(){
+  document.getElementById("rp0").textContent = t("rp") + " " + gs.rp[0];
+  document.getElementById("rp1").textContent = t("rp") + " " + gs.rp[1];
+  document.getElementById("vp0").textContent = t("vp") + " " + gs.vp[0];
+  document.getElementById("vp1").textContent = t("vp") + " " + gs.vp[1];
+  // 2026-08-14追加: RP/VPと同じくgsが更新されるたびにAI持ち駒表示も
+  // 追従させる（updateStats()の呼び出し箇所を都度探して追加漏れが
+  // 起きないよう、ここに集約する）。
+  updateAiReservePanel();
+  // 2026-09-06追加: 生産フェーズ中は#mainPanel側にラウンド数が表示されなく
+  // なる（アップキープ中の中立表示に切り替わるため）ので、常時表示の
+  // 「現在の手番」パネル側にラウンド数を出す。gsが更新されるたびに
+  // 追従させたいので、ここに集約する。
+  const roundEl = document.getElementById("turnWheelRound");
+  if (roundEl && gs) roundEl.textContent = t("turnWheelRound")(gs.round);
+  // 2026-09-12追加: RP/VP表示中央のラウンド数表示も同じタイミングで追従させる
+  // （#turnWheelRoundと表示内容は同じだが、スマホでは#turnWheelPanel自体を
+  // 隠すため、こちらが常時表示側の本体になる）。
+  const centerRoundEl = document.getElementById("centerRoundNum");
+  if (centerRoundEl && gs) centerRoundEl.textContent = gs.round;
+}
+
+// 2026-09-08修正: 射程の括弧が英語ビルドでも全角「（）」のまま出力されていたのを、
+// 半角括弧に切り替えるよう修正（他の表記はすべて半角のため見た目が浮いていた）。
+function statsLine(cfg){
+  const rangeTxt = cfg.ranged
+    ? (BUILD_OPTIONS.locale === "en" ? ` (${t("rangeLabel")}${cfg.range})` : `（${t("rangeLabel")}${cfg.range}）`)
+    : '';
+  return `${t("hp")}${cfg.hp} ${t("atk")}${cfg.atk} ${t("moveLabel")}${cfg.move}${rangeTxt}`;
+}
+
+function updateReservePanel(){
+  const area = document.getElementById("reserveArea");
+  area.innerHTML = "";
+  if (gs.reserve[humanPlayer].length === 0){
+    area.innerHTML = `<p class="muted" style="font-size:12px;">${t("reserveEmpty")}</p>`;
+    return;
+  }
+  const row = document.createElement("div");
+  row.className = "reserveRow";
+  gs.reserve[humanPlayer].forEach((kind, idx) => {
+    const cfg = CONFIG.pieces[kind];
+    const btn = document.createElement("button");
+    btn.className = "reserveBtn";
+    const affordable = cfg.cost <= gs.rp[humanPlayer];
+    btn.disabled = !humanTurnActive || !affordable;
+    if (mode === "place" && selectedKind === idx) btn.classList.add("active");
+    btn.innerHTML = `<div class="kindName">${pieceLabel(kind)}${costLabel(cfg.cost)}</div><div class="kindStats">${statsLine(cfg)}</div>`;
+    btn.onclick = () => onReserveClick(idx);
+    row.appendChild(btn);
+  });
+  area.appendChild(row);
+}
+
+// 2026-08-14追加: AI側（=humanPlayer以外）の持ち駒を閲覧専用で表示する。
+// updateReservePanel()（自分の手持ち・クリックで選択可能）とは別関数にし、
+// ボタンはすべて disabled 相当（onclickを付けない）にする。
+// 2026-09-12修正: 表示先が#aiReservePanel（折りたたみ式の常設パネル）と
+// #aiReserveOverlay（#aiReserveCheckBtnから開く常時アクセス可能なポップアップ）の
+// 2箇所になったため、DOM構築部分をrenderAiReserveHtml()に切り出して共有する。
+function renderAiReserveHtml(){
+  const aiPlayer = 1 - humanPlayer;
+  if (!gs || gs.reserve[aiPlayer].length === 0){
+    return `<p class="muted" style="font-size:12px;">${t("aiReserveEmpty")}</p>`;
+  }
+  const items = gs.reserve[aiPlayer].map((kind) => {
+    const cfg = CONFIG.pieces[kind];
+    return `<button class="reserveBtn readonly" disabled><div class="kindName">${pieceLabel(kind)}${costLabel(cfg.cost)}</div><div class="kindStats">${statsLine(cfg)}</div></button>`;
+  }).join("");
+  return `<div class="reserveRow">${items}</div>`;
+}
+
+function updateAiReservePanel(){
+  const html = renderAiReserveHtml();
+  document.getElementById("aiReserveArea").innerHTML = html;
+  // 2026-09-12追加: ポップアップ(#aiReserveOverlay)が開いたままの間にgsが
+  // 更新された場合（例: 生産フェーズ中に開きっぱなしにしていた場合）も、
+  // 一度閉じて開き直さなくても内容が古いままにならないようにする。
+  const overlay = document.getElementById("aiReserveOverlay");
+  if (overlay && overlay.style.display === "flex"){
+    document.getElementById("aiReserveModalArea").innerHTML = html;
+  }
+}
+
+// 2026-09-12追加: パス/投了ボタンの間に常設した「AIの持ち駒を確認」ボタンから
+// 開くポップアップ。画面遷移は挟まず、対局の進行状況にも一切触れない
+// 読み取り専用の表示（いつでも・何度でも開閉可）。
+function showAiReserveModal(){
+  document.getElementById("aiReserveModalArea").innerHTML = renderAiReserveHtml();
+  document.getElementById("aiReserveOverlay").style.display = "flex";
+}
+function hideAiReserveModal(){
+  document.getElementById("aiReserveOverlay").style.display = "none";
+}
+document.getElementById("aiReserveCheckBtn").onclick = showAiReserveModal;
+document.getElementById("aiReserveModalCloseBtn").onclick = hideAiReserveModal;
+
+// ---------------- ハイライト計算: すべてPython側のvalid_actionsをフィルタするだけ ----------------
+// (旧版はここで盤面ジオメトリ・移動範囲をJSで再計算していたが、それ自体が
+//  ロジックの二重実装だったため廃止。人間の手番が始まった時点でPythonから
+//  取得したhumanValidActionsをフィルタするだけにする。)
+function computePlaceTargets(kind){
+  const targets = new Set();
+  for (const a of humanValidActions){
+    if (a.type === "place" && a.kind === kind) targets.add(key(a.pos[0], a.pos[1]));
+  }
+  return targets;
+}
+function computeMoveTargets(src){
+  const targets = new Set();
+  for (const a of humanValidActions){
+    if (a.type === "move" && a.src[0]===src[0] && a.src[1]===src[1]) targets.add(key(a.dst[0], a.dst[1]));
+  }
+  return targets;
+}
+
+function resetSelection(){
+  mode = null; selectedKind = null; selectedSrc = null; highlightSet = new Set();
+  document.getElementById("cancelBtn").style.display = "none";
+  // 生産フェーズ(enterProductionPhase)からの復帰時にpassBtnを隠していたので、
+  // 配置・移動フェーズに戻るたびに通常表示へリセットする。
+  document.getElementById("passBtn").style.display = "inline-block";
+  updateReservePanel();
+  renderBoard();
+}
+
+function onReserveClick(idx){
+  if (!humanTurnActive) return;
+  const kind = gs.reserve[humanPlayer][idx];
+  const cfg = CONFIG.pieces[kind];
+  if (cfg.cost > gs.rp[humanPlayer]) return;
+  mode = "place"; selectedKind = idx; selectedSrc = null;
+  highlightSet = computePlaceTargets(kind);
+  document.getElementById("cancelBtn").style.display = "inline-block";
+  updateReservePanel();
+  renderBoard();
+}
+
+function onCellClick(x,y){
+  if (directorMode){
+    selectedSrc = [x,y];
+    const p = getPieceAt(x,y);
+    const hpInput = document.getElementById("dirHpInput");
+    if (hpInput) hpInput.value = p ? p.hp : "";
+    renderBoard();
+    return;
+  }
+  if (!humanTurnActive) return;
+  const k = key(x,y);
+  const piece = getPieceAt(x,y);
+
+  if (mode === "place"){
+    if (highlightSet.has(k)){
+      const kind = gs.reserve[humanPlayer][selectedKind];
+      submitHumanAction({type:"place", kind, pos:[x,y]});
+    }
+    return;
+  }
+  if (mode === "move"){
+    if (selectedSrc && selectedSrc[0]===x && selectedSrc[1]===y){
+      resetSelection(); return;
+    }
+    if (highlightSet.has(k)){
+      submitHumanAction({type:"move", src: selectedSrc, dst:[x,y]});
+      return;
+    }
+  }
+  if (piece && piece.owner === humanPlayer && piece.movable){
+    if (CONFIG.economy.move_action_cost > gs.rp[humanPlayer]) return;
+    mode = "move"; selectedKind = null; selectedSrc = [x,y];
+    highlightSet = computeMoveTargets([x,y]);
+    document.getElementById("cancelBtn").style.display = "inline-block";
+    renderBoard();
+  }
+}
+
+document.getElementById("cancelBtn").onclick = resetSelection;
+document.getElementById("passBtn").onclick = () => {
+  if (!humanTurnActive) return;
+  submitHumanAction({type:"pass"});
+};
+
+// ============================================================================
+// 演出モード（自由配置・動画撮影用） 2026-08-27追加
+// ----------------------------------------------------------------------------
+// 目的: トレーラー・紹介動画用に「物量で圧倒する」「本拠が崩れる」といった
+// 見せ場を、実際の対局進行（RPコスト・手番・探索AI）を待たずに好きな局面で
+// 再現できるようにする。
+//
+// 実装方針: Pythonエンジン(gameId)には一切書き込まない。renderBoard() /
+// updateStats() / getPieceAt() は既存のモジュールスコープ変数 gs を読むだけ
+// なので、演出モードON時は gs を「実対局から切り離した見た目だけのコピー」
+// に差し替える。OFFに戻すときは apiState(gameId) で再取得するだけで、
+// 本来の対局状態にノーダメージで復帰する（演出中の編集は実エンジンの
+// 状態に一切影響しない）。
+// ============================================================================
+let directorMode = false;
+
+function populateDirKindSelect(){
+  const sel = document.getElementById("dirKind");
+  sel.innerHTML = "";
+  Object.keys(PIECE_DISPLAY.ja).forEach(kind => {
+    const opt = document.createElement("option");
+    opt.value = kind;
+    opt.textContent = pieceLabel(kind);
+    sel.appendChild(opt);
+  });
+}
+
+function playDamagePopup(x, y, amount){
+  const cell = document.getElementById("cell_"+key(x,y));
+  if (!cell) return;
+  const rect = cell.getBoundingClientRect();
+  const span = document.createElement("div");
+  span.className = "dmgPopup";
+  span.textContent = "-" + amount;
+  span.style.fontSize = Math.min(36, 14 + amount/6) + "px";
+  span.style.left = (rect.left + rect.width/2) + "px";
+  span.style.top = rect.top + "px";
+  document.body.appendChild(span);
+  setTimeout(() => span.remove(), 900);
+}
+
+document.getElementById("directorToggle").onchange = (e) => {
+  directorMode = e.target.checked;
+  document.getElementById("directorPanel").style.display = directorMode ? "block" : "none";
+  if (directorMode){
+    // 実対局の現在の見た目をそのままコピーして編集開始（deep copyで実状態と切り離す）
+    gs = gs ? JSON.parse(JSON.stringify(gs)) : {pieces:[], reserve:[[],[]], rp:[0,0], vp:[0,0], round:1, placementBan:[]};
+    humanTurnActive = false;
+    selectedSrc = null; highlightSet = new Set();
+    document.getElementById("overlay").style.display = "none";
+    populateDirKindSelect();
+    document.getElementById("dirRp0").value = gs.rp[0];
+    document.getElementById("dirVp0").value = gs.vp[0];
+    document.getElementById("dirRp1").value = gs.rp[1];
+    document.getElementById("dirVp1").value = gs.vp[1];
+  } else if (gameId !== null){
+    // 実エンジンの状態を取り直す。演出モード中の編集はここで完全に破棄される。
+    gs = apiState(gameId);
+  }
+  renderBoard();
+  updateStats();
+};
+
+document.getElementById("dirPlaceBtn").onclick = () => {
+  if (!directorMode || !selectedSrc) return;
+  const [x,y] = selectedSrc;
+  const owner = parseInt(document.getElementById("dirOwner").value, 10);
+  const kind = document.getElementById("dirKind").value;
+  const cfg = CONFIG.pieces[kind];
+  gs.pieces = gs.pieces.filter(p => !(p.pos[0]===x && p.pos[1]===y));
+  gs.pieces.push({pos:[x,y], owner, kind, hp: cfg.hp, maxHp: cfg.hp, movable: kind !== "本拠"});
+  document.getElementById("dirHpInput").value = cfg.hp;
+  renderBoard();
+};
+document.getElementById("dirClearBtn").onclick = () => {
+  if (!directorMode || !selectedSrc) return;
+  const [x,y] = selectedSrc;
+  gs.pieces = gs.pieces.filter(p => !(p.pos[0]===x && p.pos[1]===y));
+  renderBoard();
+};
+document.getElementById("dirSetHpBtn").onclick = () => {
+  if (!directorMode || !selectedSrc) return;
+  const piece = getPieceAt(selectedSrc[0], selectedSrc[1]);
+  if (!piece) return;
+  const val = parseInt(document.getElementById("dirHpInput").value, 10);
+  if (!isNaN(val)) piece.hp = Math.max(0, Math.min(val, piece.maxHp));
+  renderBoard();
+};
+document.getElementById("dirDamageBtn").onclick = () => {
+  if (!directorMode || !selectedSrc) return;
+  const [x,y] = selectedSrc;
+  const piece = getPieceAt(x,y);
+  if (!piece) return;
+  const amount = Math.min(50, piece.hp);
+  playDamagePopup(x, y, amount);
+  piece.hp -= amount;
+  if (piece.hp <= 0){
+    gs.pieces = gs.pieces.filter(p => p !== piece);
+    selectedSrc = null;
+  }
+  setTimeout(() => { renderBoard(); if (document.getElementById("dirHpInput")) document.getElementById("dirHpInput").value = piece.hp; }, 550);
+};
+document.getElementById("dirApplyStatsBtn").onclick = () => {
+  gs.rp[0] = parseInt(document.getElementById("dirRp0").value, 10) || 0;
+  gs.vp[0] = parseInt(document.getElementById("dirVp0").value, 10) || 0;
+  gs.rp[1] = parseInt(document.getElementById("dirRp1").value, 10) || 0;
+  gs.vp[1] = parseInt(document.getElementById("dirVp1").value, 10) || 0;
+  updateStats();
+};
+document.getElementById("dirResetBtn").onclick = () => {
+  if (!directorMode) return;
+  gs.pieces = [];
+  selectedSrc = null;
+  renderBoard();
+};
+
+// ---------------- ラウンド進行 ----------------
+// 2026-09-12追加: 投了ボタンで対局が終わった直後にも、それ以前に
+// setTimeout()で予約済みだったbeginTurnFor()/doAiTurn()/proceedAfter()/
+// doCombatPhase()呼び出しが後から発火することがある（例: 投了ボタンを
+// AIの「思考中」表示中に押した場合）。対局終了後にこれらが実行されると、
+// 既に終わった対局のgame_idに対してAPIを呼んでしまい、無意味なログ追加や
+// 予期しない例外の原因になるため、進行系の関数の先頭で必ずこのガードを通す。
+function isGameOver(){ return !!(gs && gs.gameOver); }
+
+function beginTurnFor(playerIdx){
+  if (isGameOver()) return;
+  // 2026-09-07再修正(2回目): 回転ホイールはこの関数自体では進めない。
+  // 「playerIdxの配置フェーズが始まる」タイミングでの+1は、この関数の
+  // 呼び出し元（startNextRound()の最初の呼び出し、およびproceedAfter()の
+  // 2人目の手番へ進む分岐）側で行う（そちらの方が「前の状態から進む」
+  // タイミングとして自然なため）。
+  if (playerIdx === humanPlayer){
+    humanTurnActive = true;
+    humanValidActions = apiValidActions(gameId, humanPlayer);
+    setPhaseTitle(t("roundTurnYou")(gs.round, CONFIG.turn_limit_per_player));
+    setPanelMode("modePlacement", t("phaseBadgePlacement"));
+    hideAiThinking();
+    resetSelection();
+  } else {
+    humanTurnActive = false;
+    // 2026-09-06変更: 「AI思考中」の表示はmainPanel(配置フェーズ画面)から
+    // AIの持ち駒パネルの右側(#aiThinkingIndicator)へ移設した。mainPanel側は
+    // シンプルな「AIの手番です」表示のみにする（ラウンド数は常時表示の
+    // 「現在の手番」パネル側に出るようになったため、ここでは重複させない）。
+    setPhaseTitle(t("phaseBadgeWaiting"));
+    setPanelMode("modeWaiting", t("phaseBadgeWaiting"));
+    showAiThinking(gs.round);
+    setTimeout(() => doAiTurn(playerIdx), 350);
+  }
+}
+
+// 2026-09-06追加: 「AIの思考中」表示。AIの持ち駒パネルの右側に出す
+// （以前はmainPanel側の大きな見出しで表示していたが、盤面と持ち駒を
+// 確認しながら状況を追えるよう、AIの持ち駒のすぐ隣に移した）。
+function showAiThinking(round){
+  const el = document.getElementById("aiThinkingIndicator");
+  if (!el) return;
+  el.textContent = t("aiThinkingLabel")(round);
+  el.style.display = "inline";
+}
+function hideAiThinking(){
+  const el = document.getElementById("aiThinkingIndicator");
+  if (el) el.style.display = "none";
+}
+
+// 2026-09-07再修正(2回目): 1人目の手番が終わった直後にここが呼ばれる。
+// 2人目がまだ手番を消化していなければ「2人目の配置フェーズが始まる」
+// （ホイールの点は先手用と後手用で別なので+1）。両者とも消化済みなら
+// 「戦闘解決フェーズが始まる」（+1してからdoCombatPhase()へ）。
+function proceedAfter(justActedPlayer){
+  if (isGameOver()) return;
+  const other = 1 - justActedPlayer;
+  if (roundActionsThisRound[other] === undefined){
+    wheelStep++;
+    updateTurnWheel();
+    setTimeout(() => beginTurnFor(other), 250);
+  } else {
+    wheelStep++;
+    updateTurnWheel();
+    setBoardPhaseClass("combat");
+    setTimeout(doCombatPhase, 350);
+  }
+}
+
+function submitHumanAction(action){
+  if (isGameOver()) return;
+  humanTurnActive = false;
+  try {
+    apiApplyAction(gameId, humanPlayer, action);
+    gs = apiState(gameId);
+  } catch (err) {
+    handleFatalGameError(err, "submitHumanAction");
+    return;
+  }
+  roundActionsThisRound[humanPlayer] = action;
+  addLog(actionLabel(action, humanPlayer));
+  // 2026-09-07再修正(2回目): ホイールを進める処理自体はproceedAfter()側で
+  // 行う（次に始まるのが2人目の配置か戦闘解決かはproceedAfter()でしか
+  // 判定できないため）。
+  resetSelection();
+  updateStats();
+  proceedAfter(humanPlayer);
+}
+
+function doAiTurn(aiIdx){
+  if (isGameOver()) return;
+  // 2026-09-12追加: 過去に「AIが初手を指さないまま止まる」不具合が報告された
+  // ことを踏まえた防御策。Pyodide/AI側で想定外の例外（例:
+  // 評価用の重みキーの食い違いなど）が発生すると、以前はこの関数の途中で
+  // 静かに投げっぱなしになり、「思考中」表示のまま何も起きず、対局が
+  // 無言で止まって見えた（原因の手がかりも画面に一切残らなかった）。
+  // try/catchで確実に捕捉し、handleFatalGameError()で目に見えるエラー
+  // 表示に変える（原因調査もできるようconsole.errorにも出す）。
+  let action;
+  try {
+    const debugOn = document.getElementById("aiDebugToggle").checked;
+    if (debugOn){
+      const result = apiAiChooseWithDebug(gameId, aiId, aiIdx);
+      action = result.action;
+      const lines = result.candidates.slice(0, 8).map(c =>
+        `${c.value === null ? "  n/a" : c.value.toFixed(2).padStart(8)}  ${formatActionForLog(c.action)}`
+      );
+      addLog(`<span class="muted">[R${gs.round} P${aiIdx}] top candidates:<br>` + lines.join("<br>") + `</span>`);
+    } else {
+      action = apiAiChoose(gameId, aiId, aiIdx);
+    }
+    apiApplyAction(gameId, aiIdx, action);
+  } catch (err) {
+    handleFatalGameError(err, "doAiTurn");
+    return;
+  }
+  gs = apiState(gameId);
+  roundActionsThisRound[aiIdx] = action;
+  addLog(actionLabel(action, aiIdx));
+  hideAiThinking(); // 2026-09-06追加: 着手が決まったら「思考中」表示を消す
+  // 2026-09-07再修正(2回目): submitHumanAction()と同様、ホイールを進める処理は
+  // proceedAfter()側で行う。
+  updateStats();
+  proceedAfter(aiIdx);
+}
+
+// 2026-09-07再修正(2回目): 呼び出し時点で回転ホイールは既に「戦闘解決」の
+// 点を指している（proceedAfter()側で+1・setBoardPhaseClass("combat")済み）。
+// この関数の中では戦闘解決自体（apiResolveRoundEnd）とAIの生産判断を行い、
+// 最後に「共同生産フェーズが始まる」タイミングでもう1つ分進める（下記の
+// 既存のwheelStep++がそれに当たる。play_vs_aiには独立した「戦闘解決」画面が
+// 無いため、戦闘解決→共同生産の間に見た目上の一時停止は無いが、ホイールの
+// 最終的な静止位置・回転量は正しい）。
+function doCombatPhase(){
+  if (isGameOver()) return;
+  // 2026-09-12追加: doAiTurn()と同じ理由でtry/catchを追加（このラウンドの
+  // 戦闘解決・AIの生産判断もPyodide側のPython実行を伴うため、想定外の例外が
+  // 起きると以前は無言で止まって見えていた）。
+  let result, aiPlayer, aiProducedKind, aiAffordable, humanAffordable;
+  try {
+    result = apiResolveRoundEnd(gameId);
+    gs = apiState(gameId);
+    updateStats();
+    renderBoard();
+
+    if (result.gameOver){
+      // 2026-09-06追加: 対局終了ラウンドは生産フェーズを行わないが、そのラウンド
+      // 自体の棋譜（戦闘結果を含む）は必ず確定させないとg.kifuにこのラウンドが
+      // 記録されず、ダウンロードした棋譜がbuild_tools.py viewerで再生できなく
+      // なる（2026-09-06に実際に発生したバグの修正）。
+      apiFinalizeRoundKifu(gameId, {});
+      showGameOver();
+      return;
+    }
+
+    aiPlayer = 1 - humanPlayer;
+    aiProducedKind = null;
+    aiAffordable = apiAffordableProduction(gameId, aiPlayer);
+    if (aiAffordable.length > 0){
+      const kind = apiAiChooseProduction(gameId, aiId, aiPlayer);
+      aiProducedKind = apiApplyProduction(gameId, aiPlayer, kind);
+      // 2026-09-08修正: 英語ビルドでも「AI: アップキープで ○○ を生産」という
+      // 日本語がそのまま出力されていた不具合を修正（人間側のログ(1311行目付近の
+      // winReasonUpkeepLabel()呼び出し)と同じ言い回しに揃える）。
+      if (aiProducedKind) addLog(`<span class="p${aiPlayer}text">${t("ai")}: ${winReasonUpkeepLabel()} ${pieceLabel(aiProducedKind)}</span>`);
+    }
+    gs = apiState(gameId);
+    updateStats();
+    humanAffordable = apiAffordableProduction(gameId, humanPlayer);
+  } catch (err) {
+    handleFatalGameError(err, "doCombatPhase");
+    return;
+  }
+
+  // 2026-09-06追加/2026-09-07再修正(2回目): 共同生産(アップキープ)は、生産
+  // フェーズのUIを実際に表示するかどうかに関わらず、ラウンドごとに必ず1回
+  // 発生するイベントである（game.pyのGame.run()はproduction_enabledなら
+  // 毎ラウンドproduction_phase()を呼ぶ。人間側がhumanAffordable空で選択肢が
+  // 無い場合も、イベント自体は起きている）。回転ホイールもこれに合わせ、
+  // UIの表示有無とは無関係にここで必ず1つ分進める（戦闘解決→共同生産の遷移）。
+  wheelStep++;
+  updateTurnWheel();
+  setBoardPhaseClass("production");
+
+  // 生産できるRPが無い（humanAffordableが空）場合は、生産フェーズの画面を
+  // 出さずそのまま次のラウンドへ進む（元々の仕様どおり。なお各ラウンドの
+  // 最初のフェーズは配置・移動フェーズであり、生産フェーズはそのラウンドの
+  // 戦闘解決後＝次ラウンド開始前のアップキープとして毎ラウンド発生する）。
+  if (humanAffordable.length > 0){
+    enterProductionPhase(humanAffordable, aiPlayer, aiProducedKind);
+  } else {
+    const produced = {};
+    produced[aiPlayer] = aiProducedKind;
+    apiFinalizeRoundKifu(gameId, produced);
+    startNextRound();
+  }
+}
+
+// 2026-09-04変更: 生産をフルスクリーンのモーダル（別画面）にせず、盤面はそのまま
+// 表示した状態で生産選択を直接描画するようにした。以前は「生産画面 → 盤面を見る →
+// 生産画面に戻る」という往復操作が必要だったが、この構造ではその往復自体が発生しない。
+// 2026-09-06変更: それまでは配置・移動フェーズと同じ#mainPanel/#reserveAreaを
+// 生産フェーズでも使い回し、枠色とバッジ(setPanelMode)だけで区別していたが、
+// 画面上でも完全に分離してほしいという要望を受け、画面右端の専用カラム
+// (#prodPanel/#prodReserveArea、.layoutの3カラム目)に描画するよう変更した。
+// #mainPanel側は生産フェーズ中「アップキープ中」の中立表示に切り替え、
+// 「配置・移動フェーズの手番待ち表示のまま生産UIが右に出る」という
+// 混乱が起きないようにする。
+function enterProductionPhase(affordableKinds, aiPlayer, aiProducedKind){
+  humanTurnActive = false;
+  // 2026-09-12追加: スマホ幅では#mainPanel（「アップキープ中、右の生産パネルを
+  // ご確認ください」という案内＋現在の持ち駒の閲覧表示）と#prodPanel（実際の
+  // 生産選択ボタン）が縦に両方並んでしまい、同じ持ち駒一覧が2回表示される
+  // ような冗長な見た目になる（デスクトップでは左右別カラムなので問題ない）。
+  // CSS側(@media (max-width:760px) .duringProduction)でこの間だけ#mainPanelを
+  // 隠せるよう、クラスを付けておく（次の配置フェーズ開始時=startNextRound()で
+  // 必ず外す）。
+  document.getElementById("mainPanel").classList.add("duringProduction");
+  // 2026-09-06修正: mainPanel側のバッジが「AIの手番です」(phaseBadgeWaiting)を
+  // 誤って流用していたため、生産（アップキープ）中なのにAIの手番であるかの
+  // ような表示になっていた。専用の中立文言(phaseBadgeUpkeep)に差し替える。
+  setPanelMode("modeWaiting", t("phaseBadgeUpkeep"));
+  setPhaseTitle(t("upkeepInProgressTitle"));
+  hideAiThinking();
+  document.getElementById("phaseNoteArea").innerHTML = "";
+  // 2026-09-06修正: 以前はここでreserveAreaを空にしていたため、生産の要否を
+  // 判断する材料であるはずの「現在の手持ち」が生産フェーズ中は一切見えなく
+  // なっていた。updateReservePanel()を呼んで（閲覧のみ、humanTurnActive=false
+  // のためボタンは自動的に無効化される）現在の持ち駒を表示し続ける。
+  updateReservePanel();
+  document.getElementById("cancelBtn").style.display = "none";
+  document.getElementById("passBtn").style.display = "none";
+
+  // 2026-09-06修正: 回転ホイールは呼び出し元のdoCombatPhase()側で、生産UIの
+  // 表示有無に関わらずラウンドごとに必ず1回進めているため、ここでは触れない。
+
+  const prodPanel = document.getElementById("prodPanel");
+  prodPanel.style.display = "block";
+  document.getElementById("prodPhaseBadge").textContent = t("phaseBadgeProduction");
+  document.getElementById("prodPhaseTitle").textContent = t("prodModalTitle");
+  document.getElementById("prodPhaseNoteArea").innerHTML =
+    `<p class="muted" style="font-size:12px;">${t("prodModalBody")}</p>`;
+
+  const area = document.getElementById("prodReserveArea");
+  area.innerHTML = "";
+  const row = document.createElement("div");
+  row.className = "reserveRow";
+  affordableKinds.forEach(kind => {
+    const cfg = CONFIG.pieces[kind];
+    const btn = document.createElement("button");
+    btn.className = "reserveBtn";
+    btn.innerHTML = `<div class="kindName">${pieceLabel(kind)}${costLabel(cfg.produce_cost)}</div><div class="kindStats">${t("hp")}${cfg.hp} ${t("atk")}${cfg.atk}</div>`;
+    btn.onclick = () => {
+      if (isGameOver()) return;
+      try {
+        const produced = apiApplyProduction(gameId, humanPlayer, kind);
+        gs = apiState(gameId);
+        if (produced) addLog(`<span class="p${humanPlayer}text">${t("you")}: ${winReasonUpkeepLabel()} ${pieceLabel(produced)}</span>`);
+        updateStats();
+        prodPanel.style.display = "none";
+        // 2026-09-06追加: 両者の生産フェーズが完了したのでこのラウンドの棋譜を確定する
+        const producedMap = {};
+        producedMap[humanPlayer] = produced;
+        producedMap[aiPlayer] = aiProducedKind;
+        apiFinalizeRoundKifu(gameId, producedMap);
+        startNextRound();
+      } catch (err) {
+        handleFatalGameError(err, "productionChoice");
+      }
+    };
+    row.appendChild(btn);
+  });
+  area.appendChild(row);
+
+  const skipBtn = document.getElementById("prodSkipBtn");
+  skipBtn.textContent = t("skipProdBtn");
+  skipBtn.onclick = () => {
+    if (isGameOver()) return;
+    try {
+      prodPanel.style.display = "none";
+      // 2026-09-06追加: 生産しない選択をした場合も、AI側の生産結果と合わせて
+      // 棋譜を確定させる必要がある（そうしないとこのラウンドがg.kifuに記録されない）。
+      const producedMap = {};
+      producedMap[humanPlayer] = null;
+      producedMap[aiPlayer] = aiProducedKind;
+      apiFinalizeRoundKifu(gameId, producedMap);
+      startNextRound();
+    } catch (err) {
+      handleFatalGameError(err, "productionSkip");
+    }
+  };
+}
+
+function winReasonUpkeepLabel(){
+  return BUILD_OPTIONS.locale === "en" ? "produced during upkeep:" : "アップキープで生産:";
+}
+
+// 現在のフェーズを枠色・バッジで明示する。
+//   modeProduction: 生産（紫枠）＝手番を消費しない（#prodPanel専用。2026-09-07修正で
+//                   後手の橙と紛らわしい黄→紫に変更）
+//   modePlacement : 配置・移動（緑枠）＝あなたの手番
+//   modeWaiting   : AIの手番、またはアップキープ中（グレー枠）
+function setPanelMode(modeName, badgeText){
+  const panel = document.getElementById("mainPanel");
+  panel.classList.remove("modeProduction", "modePlacement", "modeWaiting");
+  panel.classList.add(modeName);
+  const badge = document.getElementById("phaseBadge");
+  badge.classList.remove("modeProduction", "modePlacement", "modeWaiting");
+  badge.classList.add(modeName);
+  badge.textContent = badgeText;
+}
+
+function setPhaseTitle(text){ document.getElementById("phaseTitle").textContent = text; }
+
+function startNextRound(){
+  // 2026-09-12追加: enterProductionPhase()で付けたduringProduction（スマホ幅で
+  // #mainPanelを隠すためのクラス）を、次のラウンドの配置フェーズが始まる前に
+  // 必ず外す。
+  document.getElementById("mainPanel").classList.remove("duringProduction");
+  const info = apiBeginRound(gameId);
+  gs = apiState(gameId);
+  updateStats();
+  renderBoard();
+  if (!info){
+    showGameOver();
+    return;
+  }
+  // 2026-09-07追加/2026-09-07再修正(2回目): 次ラウンド最初の配置フェーズが
+  // 始まるタイミングでホイールを1つ進める（前のラウンドの共同生産フェーズ
+  // から切り替わる瞬間）。ただし1ラウンド目の開始（wheelStep=0が最初から
+  // 指している先手配置フェーズそのもの）では進めない。startGameAs()が
+  // wheelStep=0にリセットした直後にもこの関数を呼ぶため、round===1のときは
+  // 何もしない。
+  if (gs.round > 1){
+    wheelStep++;
+    updateTurnWheel();
+  }
+  // 2026-09-07追加: 盤面の枠色（現在のフェーズ表示）を配置フェーズに戻す。
+  // round===1のときも（startGameAs()側でも設定済みだが）念のためここで
+  // 揃えておく。
+  setBoardPhaseClass("placement");
+  roundActionsThisRound = {};
+  const note = document.getElementById("phaseNoteArea");
+  let noteHtml = "";
+  if (gs.round === CONFIG.vp_spots.count_start_round){
+    noteHtml += `<div class="phaseNote">${t("vpSpotStartNote")}</div>`;
+  }
+  if (gs.round === CONFIG.midgame_spots.start_round){
+    noteHtml += `<div class="phaseNote">${t("midgameStartNote")}</div>`;
+  }
+  note.innerHTML = noteHtml;
+  beginTurnFor(info.order[0]); // alternate_initiative_each_round有効時は偶数ラウンドで反転（Python側 begin_round が判定）
+}
+
+function winReasonText(reason){
+  // 2026-09-12追加: 投了による決着は「勝者/敗者」の固定文言(t("winReasons"))
+  // では誰が投了したかを表せない（winnerは常に投了していない側になるため）。
+  // gs.resignedPlayer（state_json()参照）を見て、あなた/AIどちらが投了したかで
+  // 文言を出し分ける。
+  if (reason === "resigned"){
+    const resignerIsHuman = gs.resignedPlayer === humanPlayer;
+    return resignerIsHuman ? t("youResignedReason") : t("aiResignedReason");
+  }
+  return t("winReasons")[reason] || reason;
+}
+
+// 2026-09-12追加/2026-09-12再修正: 投了ボタン。対局が進行中（gs.gameOverで
+// ない）ならいつでも押せる。
+// 再修正: 誤クリック防止に window.confirm() を使っていたが、スマホ（特に
+// itch.io等のiframe埋め込み環境）で投了ボタンを押すとブラウザ側の画面へ
+// 戻ってしまう（itch.ioの場合はゲームが強制終了され「Run game」で再読込が
+// 必要になる）という報告があった。iframe内でのネイティブなconfirm()呼び出しは
+// 環境によって挙動が不安定なため、ネイティブダイアログを使わず、他の確認画面
+// （#howToOverlay等）と同様にページ内蔵のオーバーレイ(#overlay/#modalContent)
+// で確認するように変更した。#overlayは投了操作が可能な間（対局進行中）は
+// 他の用途（先手/後手選択・対局終了）で使われていないため、流用しても衝突しない。
+function handleResignClick(){
+  if (!gs || gs.gameOver) return;
+  showResignConfirm();
+}
+
+function showResignConfirm(){
+  const overlay = document.getElementById("overlay");
+  const modal = document.getElementById("modalContent");
+  modal.innerHTML = `<h2>${t("resignBtn")}</h2>
+    <p>${t("resignConfirm")}</p>
+    <button class="mainBtn" id="resignConfirmYesBtn" style="background:#c0392b; border-color:#c0392b;">${t("resignConfirmYesBtn")}</button>
+    <button class="ghostBtn" id="resignConfirmNoBtn" style="margin-left:8px;">${t("resignConfirmNoBtn")}</button>`;
+  modal.querySelector("#resignConfirmNoBtn").onclick = () => {
+    overlay.style.display = "none";
+  };
+  modal.querySelector("#resignConfirmYesBtn").onclick = () => {
+    overlay.style.display = "none";
+    if (!gs || gs.gameOver) return; // オーバーレイ表示中に対局が終わっていた場合の保険
+    humanTurnActive = false;
+    apiResign(gameId, humanPlayer);
+    gs = apiState(gameId);
+    hideAiThinking();
+    updateStats();
+    showGameOver();
+  };
+  overlay.style.display = "flex";
+}
+document.getElementById("resignBtn").onclick = handleResignClick;
+
+// 2026-09-12追加: スマホ幅専用のAI持ち駒/ログパネル折りたたみトグル
+// （0.97節「スマホでも配置・生産の操作テンポを損なわない」対応の一部）。
+// デスクトップ幅では#toggleSecondaryBtn自体がdisplay:noneのまま
+// （CSSの@media (max-width:760px)参照）なので、押されることはない。
+function updateSecondaryToggleLabel(){
+  const btn = document.getElementById("toggleSecondaryBtn");
+  if (!btn) return;
+  const shown = document.body.classList.contains("showSecondaryPanels");
+  btn.textContent = shown ? t("hideSecondaryBtn") : t("showSecondaryBtn");
+}
+document.getElementById("toggleSecondaryBtn").onclick = () => {
+  document.body.classList.toggle("showSecondaryPanels");
+  updateSecondaryToggleLabel();
+};
+
+// 2026-09-06追加: 対局終了後に棋譜(kifu_data_*.json互換フォーマット)をダウンロード
+// させる。Pyodide環境にはファイルシステムを介した「保存」がないため、
+// Blob+objectURLでブラウザの通常のファイルダウンロードとして提供する。
+// 生成される中身はgenerate_kifu.pyが吐くkifu_data_*.jsonと同一スキーマ
+// （1要素のリスト）なので、build_tools.pyのビューアーや今回の分析依頼のような
+// 用途にそのまま使い回せる。
+function downloadKifu(){
+  const jsonStr = apiKifuJson(gameId, kifuBotLabels[0], kifuBotLabels[1]);
+  const blob = new Blob([jsonStr], {type: "application/json"});
+  const url = URL.createObjectURL(blob);
+  // generate_kifu.py側の_unique_kifu_filename()と同じ命名規則
+  // (kifu_data_YYYYMMDD_HHMMSS_マイクロ秒6桁.json)に桁数まで揃える
+  // （ブラウザ側にマイクロ秒精度は無いため、ミリ秒3桁を1000倍して6桁に
+  // パディングした疑似マイクロ秒で代用する。2026-09-06修正: 以前は3桁の
+  // ままにしていたが、Pythonの%f（6桁）と桁数が食い違っていた）。
+  // 2026-09-06追記: この桁数の違い自体はbuild_tools.pyの_latest_kifu_path()が
+  // ファイル名ではなく更新時刻(mtime)で最新ファイルを選ぶため、
+  // 「ダウンロードした棋譜をlocal_viewerが読み込まない」という不具合の
+  // 直接の原因ではなかった（kifu_data_*.jsonという接頭辞・拡張子さえ
+  // 一致していれば桁数は無関係にマッチする）。真の原因はlocal_viewer.html
+  // 自体がビルド時にデータを埋め込む「完全な静的ファイル」であり、
+  // ブラウザの再読み込みだけでは新しいファイルを一切拾えないことだった
+  // （local_viewer_template.htmlに追加した「棋譜ファイルを読み込む」機能を参照）。
+  // 桁数の統一自体は無害かつ紛らわしさをなくすので、そのまま揃えておく。
+  const now = new Date();
+  const pad = (n, w) => String(n).padStart(w, "0");
+  const pseudoMicros = pad(now.getUTCMilliseconds() * 1000, 6);
+  const ts = `${now.getUTCFullYear()}${pad(now.getUTCMonth()+1,2)}${pad(now.getUTCDate(),2)}_`
+    + `${pad(now.getUTCHours(),2)}${pad(now.getUTCMinutes(),2)}${pad(now.getUTCSeconds(),2)}_`
+    + `${pseudoMicros}`;
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `kifu_data_${ts}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+// 2026-09-12追加: itch.io配布時、対局終了後の「棋譜をダウンロード」→
+// 「棋譜ビューアーを開く」→「棋譜ファイルを読み込む」という手順が、
+// itch.ioのサンドボックス化されたiframe環境ではファイルダウンロード自体が
+// 期待どおりに機能せず（保存されたファイルが通常のダウンロードフォルダに
+// 見当たらず、"itch.zone"関連の一時領域に吸収されたように見えるという報告が
+// あった）、加えてlocal_viewer.html自体がビルド時点のデータを埋め込むだけの
+// 静的ファイルであるため、その手順を踏まないと「棋譜ビューアーを開く」が
+// 常に「No match data yet」のまま、という詰み状態になっていた。
+// 対策として、対局終了時点でこの棋譜をブラウザのlocalStorageにも自動保存する
+// （index.htmlとlocal_viewer.htmlはitch.io配布時も同じフォルダに同梱される
+// 同一オリジンのファイルなので、localStorageは両者で共有できる。
+// local_viewer_template.html側は起動時にこのキーを読み、埋め込み済みの
+// 試合一覧に追加する）。これにより「ファイルをダウンロードして選び直す」という
+// 手順を一切介さずに、同じブラウザでなら「棋譜ビューアーを開く」だけで
+// 直前の対局を常に振り返れるようになる。ダウンロード自体（他のPCで見る・
+// 共有する等の用途）は従来どおりボタンごと残す。
+const KIFU_STORAGE_KEY = "kifuRecords_v1";
+const KIFU_STORAGE_MAX = 10; // localStorageの容量を圧迫しすぎないよう保存件数の上限を設ける
+
+function saveKifuToLocalStorage(){
+  try {
+    const jsonStr = apiKifuJson(gameId, kifuBotLabels[0], kifuBotLabels[1]);
+    const newRecords = JSON.parse(jsonStr); // kifu_json()が返す形式は[game_data]
+    let existing = [];
+    try {
+      const raw = localStorage.getItem(KIFU_STORAGE_KEY);
+      existing = raw ? JSON.parse(raw) : [];
+      if (!Array.isArray(existing)) existing = [];
+    } catch (e){ existing = []; }
+    existing.push(...newRecords);
+    while (existing.length > KIFU_STORAGE_MAX) existing.shift();
+    localStorage.setItem(KIFU_STORAGE_KEY, JSON.stringify(existing));
+    return true;
+  } catch (e){
+    // プライベートブラウジング等でlocalStorageが使えない場合もあるため、
+    // 失敗してもエラーを投げず、呼び出し元でダウンロード導線を案内する。
+    console.error("[kifu] failed to auto-save match record to localStorage:", e);
+    return false;
+  }
+}
+
+function showGameOver(){
+  humanTurnActive = false;
+  const overlay = document.getElementById("overlay");
+  const modal = document.getElementById("modalContent");
+  const youWin = gs.winner === humanPlayer;
+  const aiPlayer = 1 - humanPlayer;
+  const autoSaved = saveKifuToLocalStorage();
+  modal.innerHTML = `<h2>${youWin ? t("youWin") : t("aiWin")}</h2>
+    <p>${winReasonText(gs.winReason)}<br>
+    ${t("finalRoundLabel")}: ${gs.round}<br>
+    ${t("vp")}: ${t("you")} ${gs.vp[humanPlayer]} / ${t("ai")} ${gs.vp[aiPlayer]}</p>
+    <button class="mainBtn" id="restartBtn">${t("restartBtn")}</button>
+    <button class="ghostBtn" id="downloadKifuBtn" style="margin-left:8px;">${t("kifuDownloadBtn")}</button>
+    <a class="ghostBtn viewerLink" id="gameOverViewerLink" href="local_viewer.html" style="margin-left:8px; display:inline-flex; vertical-align:middle;">📼 ${t("viewerLinkLabel")}</a>
+    ${autoSaved ? "" : `<p class="muted" style="font-size:11.5px; margin-top:10px;">${t("kifuAutoSaveFailedNote")}</p>`}`;
+  modal.querySelector("#restartBtn").onclick = () => {
+    overlay.style.display = "none";
+    showSideChoice();
+  };
+  modal.querySelector("#downloadKifuBtn").onclick = downloadKifu;
+  overlay.style.display = "flex";
+}
+
+// 2026-09-12追加: 「AIが初手を指さないまま止まる」という報告への対応。
+// 以前はdoAiTurn()/doCombatPhase()内でPyodide側の例外（Python側のKeyError等）
+// が起きると、setTimeout()経由の非同期呼び出しの中で無言で投げっぱなしに
+// なり、「🤔 思考中…」の表示のまま画面が二度と動かなくなっていた
+// （エラーの手がかりも画面上には一切残らなかった）。
+// この関数は、そうした想定外の例外を#overlayの専用画面で明示的に表示する
+// （タイトル画面に戻るボタン付き）。対局自体はこの時点で継続不能とみなし、
+// gsを直接gameOver扱いにして、既に予約済みの後続処理(setTimeout)が
+// 万一発火しても即座に何もせず終わるようにする（isGameOver()ガード参照）。
+function handleFatalGameError(err, where){
+  console.error(`[${where || "game"}] fatal error:`, err);
+  hideAiThinking();
+  if (gs) gs.gameOver = true;
+  const overlay = document.getElementById("overlay");
+  const modal = document.getElementById("modalContent");
+  const rawDetail = (err && (err.message || String(err))) || String(err);
+  const detail = String((where ? `[${where}] ` : "") + rawDetail)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  modal.innerHTML = `<h2>⚠️ ${t("fatalErrorTitle")}</h2>
+    <p>${t("fatalErrorBody")}</p>
+    <p style="text-align:left; font-size:11px; color:#999; background:#f7f7f5; border-radius:6px; padding:8px; max-height:140px; overflow-y:auto; white-space:pre-wrap; word-break:break-word;">${detail}</p>
+    <button class="mainBtn" id="fatalErrorBackBtn">${t("fatalErrorBackBtn")}</button>`;
+  modal.querySelector("#fatalErrorBackBtn").onclick = () => {
+    overlay.style.display = "none";
+    document.getElementById("gameScreen").style.display = "none";
+    document.getElementById("titleScreen").style.display = "";
+    // 2026-09-12追加: titlePlayBtnはtitlePlayBtn.onclick内でエンジン読み込み待ちの
+    // 間だけdisabled=trueにする作りで、対局開始後にタイトル画面へ戻ってくる経路が
+    // 従来存在しなかったため、成功時にdisabledをfalseへ戻す処理がどこにも無かった
+    // （エンジン読み込み失敗時のcatch節でのみfalseに戻していた）。そのため、この
+    // エラー画面から「タイトル画面に戻る」を押した後、プレイボタンが永久に
+    // disabledのまま残り、ページを再読み込みするまで再挑戦できない不具合があった。
+    // ここで明示的に再度有効化する。
+    document.getElementById("titlePlayBtn").disabled = false;
+  };
+  overlay.style.display = "flex";
+}
+
+// ---------------- 先手/後手選択・初期化 ----------------
+// 2026-09-07修正: 先手(player0)=青／後手(player1)=橙という色は対局者に
+// 関わらず常に固定（.statcardの色は#statcard0=p0/#statcard1=p1でHTML側に
+// 静的に付与済み、CSS側参照）。ここでは「あなた」「AI」というテキスト
+// ラベルの出し分けだけを行い、二度とclassName（＝枠色）には触れない。
+function updatePlayerLabels(){
+  document.getElementById("statLabel0").textContent = (humanPlayer === 0 ? t("you") : t("ai")) + " (" + t("p0suffix") + ")";
+  document.getElementById("statLabel1").textContent = (humanPlayer === 1 ? t("you") : t("ai")) + " (" + t("p1suffix") + ")";
+}
+
+function showSideChoice(){
+  const overlay = document.getElementById("overlay");
+  const modal = document.getElementById("modalContent");
+  modal.innerHTML = `<h2>${t("sideChoiceTitle")}</h2>
+    <p>${t("sideChoiceBody")}</p>
+    <div class="depthChoice">
+      <label for="difficultySelect">${t("difficultyLabel")}</label>
+      <select id="difficultySelect">
+        <option value="1">${t("difficultyEasy")}</option>
+        <option value="2" selected>${t("difficultyNormal")}</option>
+        <option value="3">${t("difficultyHard")}</option>
+      </select>
+      <p class="depthNote">${t("difficultyNote")}</p>
+    </div>
+    <div class="depthChoice">
+      <label for="opponentSelect">${t("opponentLabel")}</label>
+      <select id="opponentSelect">
+        <option value="">${t("opponentDefaultOption")}</option>
+        ${(BUILD_OPTIONS.champion_history || []).map(entry =>
+          `<option value="${entry.name}">${entry.name}</option>`).join("")}
+      </select>
+      <p class="depthNote">${t("opponentNote")}</p>
+    </div>
+    <div class="depthChoice">
+      <label style="display:flex; align-items:center; gap:6px;">
+        <input type="checkbox" id="tutorialModeToggle"> ${t("tutorialModeLabel")}
+      </label>
+      <p class="depthNote">${t("tutorialModeNote")}</p>
+    </div>
+    <div class="productionChoices">
+      <button class="mainBtn" id="chooseFirstBtn">${t("playFirst")}</button>
+      <button class="mainBtn" id="chooseSecondBtn">${t("playSecond")}</button>
+    </div>`;
+  // 2026-09-08修正: candidate_kは対戦相手選びには本質的でない上級者向けの
+  // チューニング値であり、選択肢として出しても混乱を招くだけという判断から
+  // UIから撤去した（内部的にはaiCandidateK＝既定値10の固定値のまま動く）。
+  // depth(1〜4)の生の数値もプレイヤーには意味が伝わらないため、難易度
+  // （やさしい/ふつう/むずかしい＝depth1〜3）という表現に置き換え、depth4は
+  // 上級者向けの検証専用設定だったため通常プレイのUIからは外した。
+  modal.querySelector("#difficultySelect").value = String(aiDepth);
+  const opponentSelect = modal.querySelector("#opponentSelect");
+  if (opponentSelect) opponentSelect.value = "";
+  modal.querySelector("#chooseFirstBtn").onclick = () => { overlay.style.display="none"; startGameAs(0); };
+  modal.querySelector("#chooseSecondBtn").onclick = () => { overlay.style.display="none"; startGameAs(1); };
+  overlay.style.display = "flex";
+}
+
+function startGameAs(side){
+  humanPlayer = side;
+  const difficultySelect = document.getElementById("difficultySelect");
+  aiDepth = difficultySelect ? parseInt(difficultySelect.value, 10) : aiDepth;
+  // candidate_kはUIから撤去したため常に既定値(10)で固定する（上のコメント参照）。
+  aiCandidateK = 10;
+  const tutorialToggle = document.getElementById("tutorialModeToggle");
+  tutorialMode = !!(tutorialToggle && tutorialToggle.checked);
+  const opponentSelect = document.getElementById("opponentSelect");
+  const opponentName = opponentSelect ? opponentSelect.value : "";
+  const opponentEntry = (BUILD_OPTIONS.champion_history || []).find(e => e.name === opponentName);
+  aiOpponentWeights = opponentEntry ? opponentEntry.weights : null;
+  aiId = apiNewBot(aiDepth, aiCandidateK, aiOpponentWeights ? JSON.stringify(aiOpponentWeights) : null);
+  gameId = apiNewGame();
+  gs = apiState(gameId);
+  mode = null; selectedKind = null; selectedSrc = null; highlightSet = new Set();
+  roundActionsThisRound = {};
+  // 2026-09-06追加: 対局後の棋譜出力(kifu_json)用に、bot0/bot1(=player0/player1)
+  // それぞれのラベルをここで確定させておく（generate_kifu.pyのbot0_label/bot1_labelと
+  // 同じ役割）。人間側は"human"固定、AI側は選んだ対戦相手名（未選択ならdefault）。
+  const aiLabel = opponentName || "default(weights.py)";
+  kifuBotLabels = humanPlayer === 0 ? ["human", aiLabel] : [aiLabel, "human"];
+  // 2026-09-06追加: 現在ターンの視覚化ホイールを対局開始時点にリセットする。
+  wheelStep = 0;
+  updateTurnWheel();
+  setBoardPhaseClass("placement");
+  hideAiThinking();
+  document.getElementById("prodPanel").style.display = "none";
+  // 新しい対局を始める際は演出モードを必ずOFFに戻す（前の対局で編集した
+  // 見た目だけの状態を引きずらないようにするため）。
+  directorMode = false;
+  document.getElementById("directorToggle").checked = false;
+  document.getElementById("directorPanel").style.display = "none";
+  document.getElementById("logbox").innerHTML = "";
+  updatePlayerLabels();
+  buildBoardSkeleton();
+  // 2026-09-08追加: チュートリアルモードがONの場合、最初の1手が始まる前に
+  // 必ず一度「遊び方・ルール説明」を表示する（対局状態(gs等)には一切触れて
+  // いないため、このモーダルを閉じてからそのまま1手目に進んでも問題ない）。
+  if (tutorialMode){
+    showHowToPlay({forced: true, onClose: startNextRound});
+  } else {
+    startNextRound();
+  }
+}
+
+// ---------------- 遊び方・ルール説明モーダル ----------------
+// 2026-09-08追加: #overlay（先手/後手選択・対局終了モーダル）とは独立した
+// #howToOverlayに表示する。対局状態(gs等)には一切触れない読むだけの画面なので、
+// タイトル画面・対局中いつでも呼び出して良い。
+// opts.forced=trueのとき（チュートリアルモードの対局開始直後）は、閉じるボタンの
+// 文言を「ルールを確認して対局を始める」に変え、閉じた直後にopts.onClose()を呼ぶ。
+function showHowToPlay(opts){
+  opts = opts || {};
+  const overlay = document.getElementById("howToOverlay");
+  const modal = document.getElementById("howToModalContent");
+  const closeLabel = opts.forced ? t("tutorialStartBtn") : t("howToCloseBtn");
+  modal.innerHTML = `<h2>${t("howToPlayTitle")}</h2>${t("howToPlayBody")}
+    <div class="closeRow"><button class="mainBtn" id="howToCloseActionBtn">${closeLabel}</button></div>`;
+  modal.querySelector("#howToCloseActionBtn").onclick = () => {
+    overlay.style.display = "none";
+    if (typeof opts.onClose === "function") opts.onClose();
+  };
+  overlay.style.display = "flex";
+}
+
+// ---------------- 起動 ----------------
+// 2026-09-08修正: 以前はページ読み込み直後にPythonエンジンの読み込みを開始し、
+// 終わり次第自動的に先手/後手選択画面まで進んでいたため、「読み込み中...」という
+// 小さな文字列だけが表示された地味な画面が挟まり、プレイヤーによっては
+// 「何をすればいいのか」「本当に始まるのか」が伝わりにくいという指摘があった。
+// タイトル画面（▶プレイ開始・📖遊び方）を常に最初に表示し、エンジンの読み込み
+// 自体はその裏でバックグラウンド開始しておく（プレイ開始を押した時点で既に
+// 終わっていれば体感の待ち時間はほぼ無い）ことで、「これから何をするか」を
+// 常に画面上のボタンで明示する。
+let engineReadyPromise = null;
+
+document.getElementById("titleHowToBtn").onclick = () => showHowToPlay();
+document.getElementById("howToPlayBtn").onclick = () => showHowToPlay();
+
+document.getElementById("titlePlayBtn").onclick = async () => {
+  const btn = document.getElementById("titlePlayBtn");
+  btn.disabled = true;
+  try {
+    await engineReadyPromise;
+  } catch (err) {
+    // initEngine()側が#bootStatusに詳細なエラー文言を出しているため、ここでは
+    // 再挑戦できるようボタンを戻すだけでよい。
+    btn.disabled = false;
+    return;
+  }
+  document.getElementById("titleScreen").style.display = "none";
+  document.getElementById("gameScreen").style.display = "";
+  showSideChoice();
+};
+
+applyLocaleStaticText();
+engineReadyPromise = initEngine();
+engineReadyPromise.catch(() => {}); // クリック前に発生した場合の Unhandled rejection 警告を抑止するだけ（実際の処理はtitlePlayBtn側のcatchで行う）
+</script>
+</body>
+</html>
+
