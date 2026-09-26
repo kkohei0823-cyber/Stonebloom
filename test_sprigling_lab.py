@@ -11,7 +11,9 @@ import sprigling as S
 from config import CONFIG, reset_config, apply_config_overrides
 from game import Game, role_of, type_multiplier
 
-COST_MODEL = {"sprigling_stats": {"model": "cost"}, "combat": {"multi_attack": False}}
+# 旧cost式（最低料金100RP時代の係数）の検証用
+COST_MODEL = {"sprigling_stats": {"model": "cost"}, "combat": {"multi_attack": False},
+              "sprigling_cost": {"base_fee": 100}}
 
 
 def test_reference_builds_are_middle_class_and_slightly_stronger():
@@ -79,13 +81,13 @@ def test_guard_moves_base_damage_to_adjacent_sprigling():
 
 def test_default_model_meets_1v1_rules():
     """既定（mass式）: 重量級は軽量級・中量級に、苔兵・棘走・岩守・毒舞は軽量級に1対1で負けない。
-    軽量級は根張（非戦闘職）に負けない。"""
+    動員コストが根張以上のSpriglingは根張（非戦闘職）に負けない。"""
     import verify_lab as V
     reset_config()
     rep = V.duel_report(80, "test", attribute=False)
     assert rep["class"]["heavy_vs_light"]["loss"] == 0.0
     assert rep["class"]["heavy_vs_middle"]["loss"] == 0.0
-    assert rep["class"]["light_vs_root"]["loss"] == 0.0
+    assert rep["class"]["pricier_vs_root"]["loss"] == 0.0
     assert all(r["loss"] == 0.0 for r in rep["core_vs_light"].values())
 
 
@@ -94,8 +96,23 @@ def test_swap_roster_mode_swaps_rosters_in_second_game():
     sc = V.ai_eval_scenario("t", "heuristic", "heuristic", None, size=2, stratified=True, mode="swap")
     swapped = V._swap_sides_of_rosters(sc)
     assert swapped["rosters"]["A"] == sc["rosters"]["B"]
-    assert swapped["start_extra"]["B"] == sc["start_extra"]["A"]
+    assert swapped["start_reserve"]["B"] == sc["start_reserve"]["A"]
     assert sc["rosters"]["A"] != sc["rosters"]["B"]
+
+
+def test_sprigling_only_game_uses_no_base_pieces():
+    """対人戦の形: 既存5種を使わず、各側のSprigling 5体だけで最後まで対局できる。"""
+    import verify_lab as V
+    sc = V.ai_eval_scenario("only", "heuristic", "heuristic", None, size=5, mode="swap")
+    V.apply_scenario(sc)
+    kinds = set(sc["rosters"]["A"]) | set(sc["rosters"]["B"])
+    for a_seat in (0, 1):
+        g = V.play_game(sc, "only", a_seat)
+        used = set(g["produced"]["A"]) | set(g["produced"]["B"])
+        assert used <= kinds, used - kinds   # 既存5種は1体も動員されない
+    game = V.Game(start_reserve={0: sc["start_reserve"]["A"], 1: sc["start_reserve"]["B"]})
+    assert game.reserve[0] == sc["start_reserve"]["A"] and len(game.reserve[0]) == 5
+    reset_config()
 
 
 def test_validate_genome_rejects_illegal_builds():

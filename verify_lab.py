@@ -111,6 +111,7 @@ def save_record(command, args, results):
 #   "rosters": {"A": [kind...]|None, "B": ...},       None=登録済み全駒種
 #   "bots": {"A": "heuristic", "B": "heuristic"},  （{"type": "heuristic", "weights": {...}} も可）
 #   "start_extra": {"A": [kind...], "B": ...},        最初の手駒に追加する駒（省略可）
+#   "start_reserve": {"A": [kind...], "B": ...},      最初の手駒そのものを置き換える（省略可）
 # }
 # 側A/Bは先後入れ替えに追従する（A側のロースター・ボットはA側が先手でも後手でも同じ）。
 # ============================================================
@@ -155,8 +156,10 @@ def play_game(sc, seed, a_seat):
     b_seat = 1 - a_seat
     rosters = sc.get("rosters") or {}
     extra = sc.get("start_extra") or {}
+    start = sc.get("start_reserve") or {}
     game = Game(roster={a_seat: rosters.get("A"), b_seat: rosters.get("B")},
-                extra_reserve={a_seat: extra.get("A"), b_seat: extra.get("B")})
+                extra_reserve={a_seat: extra.get("A"), b_seat: extra.get("B")},
+                start_reserve={a_seat: start.get("A"), b_seat: start.get("B")})
     bots = {a_seat: make_bot(sc["bots"]["A"], f"bot-{seed}-{a_seat}-A"),
             b_seat: make_bot(sc["bots"]["B"], f"bot-{seed}-{a_seat}-B")}
     res = game.run(bots)
@@ -179,6 +182,8 @@ def _swap_sides_of_rosters(sc):
     out["rosters"] = {"A": r.get("B"), "B": r.get("A")}
     e = sc.get("start_extra") or {}
     out["start_extra"] = {"A": e.get("B"), "B": e.get("A")}
+    s = sc.get("start_reserve") or {}
+    out["start_reserve"] = {"A": s.get("B"), "B": s.get("A")}
     return out
 
 
@@ -318,10 +323,12 @@ def duel_report(samples=150, seed="0", attribute=False):
                 loss += r == 0.0
                 draw += r == 0.5
         out["class"][f"{big}_vs_{small}"] = {"loss": round(loss / n, 4), "draw": round(draw / n, 4)}
-    # 根張（非戦闘職）は軽量級に負けるべきでない相手として、逆向き（軽量級側の負け）を数える
+    # 根張（非戦闘職）: 動員コストが根張以上のSpriglingは根張に負けてはいけない
+    # （安いSpriglingが負けるのは構わない。階級ではなく動員コストで判定する）
     root = CONFIG["pieces"]["工兵"]
-    lost = sum(duel_detail(b, root, mult(b, root), mult(root, b))[0] == 0.0 for b in cls["light"])
-    out["class"]["light_vs_root"] = {"loss": round(lost / samples, 4), "draw": None}
+    pricier = [b for wc in cls for b in cls[wc] if b["produce_cost"] >= root["produce_cost"]]
+    lost = sum(duel_detail(b, root, mult(b, root), mult(root, b))[0] == 0.0 for b in pricier)
+    out["class"]["pricier_vs_root"] = {"loss": round(lost / max(1, len(pricier)), 4), "draw": None}
     for k in DUEL_CORE:
         c = CONFIG["pieces"][k]
         loss = draw = 0
@@ -422,25 +429,32 @@ def _random_roster_scenario(seed, n_spriglings, stratified=False, prefix="r"):
     return spr
 
 
-def ai_eval_scenario(seed, bot_a, bot_b, overrides=None, size=3, stratified=False, mode="mirror"):
-    """AI比較用の1ペア分のシナリオ。既存5種はどちらも常に使える。
-      mirror: 両者が同じSpriglingをsize体持ち、同じ1体を最初の手駒に持つ
-      swap  : 両者が別々のSpriglingをsize体ずつ持つ（2局目で構成も入れ替える＝構成の運を相殺）"""
-    base = list(BASE_KINDS)
+def ai_eval_scenario(seed, bot_a, bot_b, overrides=None, size=5, stratified=True, mode="mirror",
+                     sprigling_only=True):
+    """AI比較用の1ペア分のシナリオ。
+      sprigling_only=True（対人戦の形）: 既存5種は使わない。各側のSprigling size体が最初の手駒で、
+                                         動員（追加）もそのSpriglingだけ
+      sprigling_only=False             : 既存5種＋Sprigling size体を動員でき、最初の手駒は
+                                         既存5種＋Sprigling 1体（ローグライトのボス戦などの形）
+      mirror: 両者が同じ構成 / swap: 両者が別々の構成（2局目で構成も入れ替える＝構成の運を相殺）"""
+    base = [] if sprigling_only else list(BASE_KINDS)
+
+    def sides(ka, kb):
+        if sprigling_only:
+            return {"rosters": {"A": ka, "B": kb}, "start_reserve": {"A": ka, "B": kb}}
+        return {"rosters": {"A": base + ka, "B": base + kb},
+                "start_extra": {"A": [ka[0]], "B": [kb[0]]}}
+
     if mode == "mirror":
         spr = _random_roster_scenario(seed, size, stratified)
         kinds = [f"S:{n}" for n in spr]
         return {"config_overrides": overrides, "spriglings": spr,
-                "rosters": {"A": base + kinds, "B": base + kinds},
-                "start_extra": {"A": [kinds[0]], "B": [kinds[0]]},
-                "bots": {"A": bot_a, "B": bot_b}}
+                "bots": {"A": bot_a, "B": bot_b}, **sides(kinds, kinds)}
     spr_a = _random_roster_scenario(seed, size, stratified, prefix="a")
     spr_b = _random_roster_scenario(seed, size, stratified, prefix="b")
     ka, kb = [f"S:{n}" for n in spr_a], [f"S:{n}" for n in spr_b]
     return {"config_overrides": overrides, "spriglings": {**spr_a, **spr_b},
-            "rosters": {"A": base + ka, "B": base + kb},
-            "start_extra": {"A": [ka[0]], "B": [kb[0]]},
-            "bots": {"A": bot_a, "B": bot_b}, "swap_rosters": True}
+            "bots": {"A": bot_a, "B": bot_b}, "swap_rosters": True, **sides(ka, kb)}
 
 
 def cmd_compare(args):
@@ -449,7 +463,7 @@ def cmd_compare(args):
         seed = f"{args.seed}-{i}"
         if args.random_rosters:
             sc = ai_eval_scenario(seed, args.a, args.b, None, args.roster_size,
-                                  args.stratified, args.roster_mode)
+                                  not args.no_stratified, args.roster_mode, not args.with_base)
         else:
             sc = {"config_overrides": None, "rosters": {"A": None, "B": None},
                   "bots": {"A": args.a, "B": args.b}, "spriglings": {}}
@@ -789,9 +803,12 @@ def main(argv=None):
     p.add_argument("--seed", default="0")
     p.add_argument("--random-rosters", action="store_true",
                    help="ペアごとにランダムなSprigling構成を両者共通で追加する")
-    p.add_argument("--roster-size", type=int, default=3)
-    p.add_argument("--stratified", action="store_true", help="構成内の階級を軽・中・重で均等に割り当てる")
+    p.add_argument("--roster-size", type=int, default=5, help="各側のSprigling数")
+    p.add_argument("--no-stratified", action="store_true",
+                   help="構成内の階級も完全ランダムにする（既定は軽・中・重を均等に割り当て）")
     p.add_argument("--roster-mode", choices=("mirror", "swap"), default="mirror")
+    p.add_argument("--with-base", action="store_true",
+                   help="既存5種も使う（既定は対人戦と同じくSpriglingだけ）")
     p.add_argument("--sprt", help="例 0.5,0.55 （H0,H1の期待スコア）。指定するとbatchごとに早期終了判定")
     p.add_argument("--batch", type=int, default=20)
     p.set_defaults(func=cmd_compare)

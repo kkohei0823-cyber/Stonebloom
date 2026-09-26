@@ -455,14 +455,19 @@ class Economy:
 # ゲーム本体
 # ============================================================
 class Game:
-    def __init__(self, roster=None, extra_reserve=None):
+    def __init__(self, roster=None, extra_reserve=None, start_reserve=None):
         """roster: {player: 動員できる駒種の集合}（省略時・Noneの要素はCONFIG["pieces"]の全駒種）。
         検証環境で片方のプレイヤーにだけSpriglingを使わせる、といった非対称な対局に使う。
-        extra_reserve: {player: [駒種...]} 最初の手駒に追加する駒（持ち込んだSprigling等）。"""
+        extra_reserve: {player: [駒種...]} 最初の手駒に追加する駒（持ち込んだSprigling等）。
+        start_reserve: {player: [駒種...]} 最初の手駒そのものを置き換える（対人戦のように
+        既存5種を使わず、持ち込んだSpriglingだけで戦う場合）。Noneの要素は従来通り。"""
         self.board = Board(CONFIG["board_size"])
         self.econ = Economy()
         extra_reserve = extra_reserve or {}
-        self.reserve = {p: list(CONFIG["starting_reserve"]) + list(extra_reserve.get(p) or [])
+        start_reserve = start_reserve or {}
+        self.reserve = {p: (list(start_reserve[p]) if start_reserve.get(p) is not None
+                            else list(CONFIG["starting_reserve"]))
+                        + list(extra_reserve.get(p) or [])
                         for p in (0, 1)}
         self.engineer_positions = set()
         self.round_number = 0

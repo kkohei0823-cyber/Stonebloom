@@ -61,9 +61,9 @@ def test_midgame_vp_tax_carries_fraction_when_capped():
 def test_weight_to_rp_cost():
     reset_config()
     assert weight_to_rp_cost(600) == 1000  # 重量級上限 = rp_cap
-    assert weight_to_rp_cost(310) == 565   # 中量級上限
-    assert weight_to_rp_cost(140) == 310   # 軽量級上限
-    assert weight_to_rp_cost(0) == 100     # base_fee
+    assert weight_to_rp_cost(310) == 517   # 中量級上限
+    assert weight_to_rp_cost(140) == 233   # 軽量級上限
+    assert weight_to_rp_cost(0) == 0       # 最低料金なし（純粋な比例式）
     for bad in (-1, 600.5):
         try:
             weight_to_rp_cost(bad)
@@ -71,10 +71,10 @@ def test_weight_to_rp_cost():
             pass
         else:
             raise AssertionError(bad)
-    # base_fee=0なら純粋な比例式
-    apply_config_overrides({"sprigling_cost": {"base_fee": 0}})
+    # base_feeを入れると最低料金つきの式になる
+    apply_config_overrides({"sprigling_cost": {"base_fee": 100}})
     assert weight_to_rp_cost(600) == 1000
-    assert weight_to_rp_cost(300) == 500
+    assert weight_to_rp_cost(0) == 100
     reset_config()
 
 

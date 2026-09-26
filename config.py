@@ -144,12 +144,13 @@ CONFIG = {
     # 「動員コスト」はコード上のキー"produce_cost"（旧称: 生産コスト）。駒を一から作るのではなく
     # 呼び寄せる、という表現に合わせて呼び名を変えた（キー名は互換のため据え置き）。
     #   cost = base_fee + (cost_at_heavy_limit - base_fee) * weight / heavy_weight_limit
-    # 重量級上限(600)でちょうど1000RP(=rp_cap)。base_feeは「どんなに軽い駒でも最低限かかる
-    # 動員費」で、1ラウンド分の基礎収入(100)に揃えてある。base_fee=0にすれば純粋な比例式になる。
+    # 重量級上限(600)でちょうど1000RP(=rp_cap)。2026-09-26: 最低料金(base_fee=100)を廃止し
+    # 純粋な比例式にした（動員コスト = 1000×重量/600）。ごく軽い駒は安く弱い、で問題ない
+    # （貴重な5枠に入れる理由が無いだけ）、という方針のため。
     "sprigling_cost": {
         "heavy_weight_limit": 600,          # Whittlewisp config.WEIGHT_CLASS_LIMITS["heavy"]
         "cost_at_heavy_limit": 10 * RP_SCALE,
-        "base_fee": 1 * RP_SCALE,
+        "base_fee": 0,
     },
 
     # Sprigling(Whittlewispの駒)のステータス算出（sprigling.derive_stats()参照）
@@ -165,11 +166,12 @@ CONFIG = {
     "sprigling_stats": {
         # "cost": 強さの総量を動員コストで決める（下のpower_*）
         # "physical": 部位の式と重量からHP・攻撃力・素早さを直接決める（下のphysical）
-        # 2026-09-26(3): 既定を mass 式に変更（1対1の絶対条件つき探索 tune_stat_model.py --model mass
-        # ＋手動の微調整。記録は runs/final_check3.json）。検証結果（新しいシード200ペア）:
-        #   1対1: 重量級→軽/中量級、苔兵・棘走・岩守・毒舞→軽量級、軽量級→根張 の負け 0%（各階級300体）
-        #   同重量の攻撃寄り vs 耐久寄り（強制動員）0.48
-        #   既存5種相手 軽0.49/中0.55/重0.51、持ち込み総当たり 軽vs中0.42/中vs重0.48/軽vs重0.43
+        # 2026-09-26(4): 既定は mass 式（1対1の絶対条件つき探索 tune_stat_model.py --model mass
+        # ＋手動の微調整）。動員コストの最低料金を廃止した後の検証（runs/final_check4.json、200ペア）:
+        #   1対1: 重量級→軽/中量級、苔兵・棘走・岩守・毒舞→軽量級、動員コスト300以上→根張 の負け 0%
+        #   同重量の攻撃寄り vs 耐久寄り（強制動員）0.52
+        #   持ち込み総当たり 軽vs中0.32/中vs重0.48/軽vs重0.32
+        #   既存5種相手（ローグライトのボス戦の形）軽0.49/中0.69/重0.56
         # 旧既定のphysical式・cost式も model を切り替えれば使える。
         "model": "mass",
         # "mass": 体の質量が総合的な強さを、部位の作りが攻撃/耐久への配分を決める（sprigling._mass_model）
@@ -186,9 +188,9 @@ CONFIG = {
             "siege_mass_exp": 0.007,   # 本拠へのダメージ = atk0 × M^(atk_mass_exp+これ)
             # 階級が1つ上がるごとに攻撃力・HP計算用の実効重量を(1+これ)倍（境目での1対1の逆転防止）
             "class_step": 0.12,
-            # 強さ計算用の実効重量 = (重量+これ)/(250+これ)。動員コスト 100+1.5×重量 = 1.5×(重量+66.7)
-            # と揃えるなら66.7（最低料金＝基礎の体の分）。0なら重量そのまま。
-            "mass_offset": 66.7,
+            # 強さ計算用の実効重量 = (重量+これ)/(250+これ)。0なら重量そのまま（既定）。
+            # 動員コストに最低料金がある場合に、その分の「基礎の体」を足すためのもの。
+            "mass_offset": 0.0,
         },
         "physical": {
             "weight_ref": 250,        # 重量の基準点（中量級の標準ビルド付近）
@@ -226,8 +228,8 @@ def weight_to_rp_cost(weight):
     """Whittlewispのビルド重量(Creature.build_weight)を動員コスト(RP, 整数)に換算する。
 
     base_fee + (cost_at_heavy_limit - base_fee) * weight / heavy_weight_limit を
-    四捨五入して整数RPにする。既定値では
-      light上限140 → 310RP / middle上限310 → 565RP / heavy上限600 → 1000RP。
+    四捨五入して整数RPにする。既定値（base_fee=0）では
+      light上限140 → 233RP / middle上限310 → 517RP / heavy上限600 → 1000RP。
     重量級上限を超えるビルドは動員できないためValueErrorにする。"""
     sc = CONFIG["sprigling_cost"]
     limit = sc["heavy_weight_limit"]

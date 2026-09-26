@@ -20,7 +20,8 @@ python3 verify_lab.py classes --mode vs-base --pairs 200   # 階級ごと: Sprig
 python3 verify_lab.py classes --mode bring --pairs 200     # 両者が1体持ち込み、階級総当たり
 python3 verify_lab.py classes --mode bring --overrides '{"sprigling_stats":{"model":"physical"},"combat":{"initiative":true}}'
 python3 verify_lab.py exploit --weight-class middle --pop 12 --gens 6
-python3 tune_sprigling_ai.py --trials 40 --pairs 60        # OptunaでAIの重みを最適化（要 pip install optuna）
+python3 tune_sprigling_ai.py --trials 60 --pairs 80 --storage sqlite:///runs/ai.db   # AIの重みを最適化（要 pip install optuna）
+python3 verify_lab.py compare --a heuristic --b heuristic --random-rosters --roster-mode swap --sprt 0.5,0.55
 python3 verify_lab.py placement-sweep --ratios 0.5,0.75,1.0 --pairs 200
 ```
 
@@ -91,13 +92,15 @@ exploitの再検定にも同じ補正を入れた。
 
 ## AI比較・Optunaでの対局構成（compare --random-rosters / tune_sprigling_ai.py）
 
-ペアごとにランダムなSpriglingを配る。既存5種はどちらも常に動員できる。
-- `--roster-size N`: 各側のSprigling数（既定3）
-- `--stratified`: 構成内の階級を軽→中→重…と均等に割り当てる（無指定なら階級も完全ランダム）
-- `--roster-mode mirror`（既定）: 両者が同じ構成（同じ1体を最初の手駒に持つ）
+既定は対人戦と同じ形: 既存5種は使わず、各側のSprigling 5体（階級は軽・中・重を均等に割り当て）が
+最初の手駒で、動員（追加）もそのSpriglingだけ。ペアごとに構成を引き直す。
+- `--roster-size N`: 各側のSprigling数（既定5）
+- `--no-stratified`: 階級も完全ランダムにする
+- `--roster-mode mirror`（既定）: 両者が同じ構成
 - `--roster-mode swap`: 両者が別々の構成。2局目は手番と一緒に構成も入れ替える
-A/Aテスト（同じAI同士、構成5体・stratified）: mirror 1500ペア 0.504、swap 300ペア 0.48、
-Spriglingなし 1500ペア 0.497（いずれもCIが0.5を含む）。
+- `--with-base`: 既存5種も使う（ローグライトのボス戦などの形）
+A/Aテスト（同じAI同士、既定の形）: mirror 400ペア 0.486、swap 400ペア 0.493（どちらもCIが0.5を含む）。
+対局は 本拠破壊57% / VP判定43%、平均26ラウンドで決着。
 
 ## 読み方の注意
 
@@ -113,27 +116,25 @@ Spriglingなし 1500ペア 0.497（いずれもCIが0.5を含む）。
 
 体の質量が総合的な強さを決め、部位の作りは「攻撃と耐久への配分」を決める。
 
-1. 実効重量 M = (重量+66.7)/(250+66.7)。66.7は動員コストの最低料金に相当する「基礎の体」
-   （動員コスト 100+1.5×重量 = 1.5×(重量+66.7) と同じ形）。階級が1つ上がるごとに ×1.12（`class_step`）
+1. M = 重量/250。階級が1つ上がるごとに攻撃力・HPの計算用に ×1.12（`class_step`）
 2. 配分 σ = 攻撃の生値/(攻撃の生値+耐久の生値)（R/H/W平均で正規化、0.34〜0.66）、r = σ/(1−σ)
    - 攻撃の生値: Whittlewispの技の `base_damage`（最強部位＋他部位×0.25）
    - 耐久の生値: Whittlewispの `compute_max_dur` の合計（材質の耐久係数込み）
 3. 攻撃力 = 31.3 × M^0.61 × r^0.60、HP = 272 × M^1.00 × r^-0.83
    （攻撃に振るほど、それ以上に耐久が落ちる）
 4. 本拠へのダメージ = 攻撃力 × 攻城倍率（作りに左右されず体重で決まる。`combat.siege`）
-5. 素早さ = 100 × (重量/250)^-0.59 × (1+0.16×脚の平均length)。**戦闘には影響しない**
+5. 素早さ = 100 × M^-0.59 × (1+0.16×脚の平均length)。**戦闘には影響しない**
    （連撃 `multi_attack` は不採用で確定、先制 `initiative` も不採用）
 6. 移動力 = 2 基準、脚の平均length≥1で+1、重量級で-1、脚なしは1 / 属性 = 重量への寄与が最大の材質
-7. 動員コスト = 100 + 900×重量/600、配置コスト = 動員コスト × 0.75
+7. 動員コスト = 1000×重量/600（最低料金なし）、配置コスト = 動員コスト × 0.75
 
-検証（新しいシード200ペア、runs/final_check3.json）:
+検証（新しいシード200ペア、runs/final_check4.json）:
 - 1対1（属性相性なし、各階級300体）: 重量級→軽/中量級、苔兵・棘走・岩守・毒舞→軽量級、
-  軽量級→根張 の負け 0%
-- 1対1（属性相性あり、軽い側が有利な組だけ）: 重→中 16.9%、中→軽 13.1%、重→軽 0%
-  （相性倍率2.5なら約30%、3.0なら約50%）
-- 同重量の攻撃寄り vs 耐久寄り（強制動員）: 0.48
-- 既存5種相手 軽0.49/中0.55/重0.51、持ち込み総当たり 軽vs中0.42/中vs重0.48/軽vs重0.43
-  （mass_offset=0だと 軽vs中0.34/軽vs重0.31 だが、軽量級の6.7%が根張に負ける）
+  動員コストが根張(300)以上のSprigling→根張 の負け 0%
+- 1対1（属性相性あり、軽い側が有利な組だけ）: 重→中 約17%、中→軽 約13%、重→軽 0%（相性倍率2.0で確定）
+- 同重量の攻撃寄り vs 耐久寄り（強制動員）: 0.52
+- 持ち込み総当たり 軽vs中0.32/中vs重0.48/軽vs重0.32
+- 既存5種相手（ローグライトのボス戦の形）軽0.49/中0.69/重0.56
 - exploit（pop10×4世代）: 壊れたビルド無し（上位3候補とも再検定でOK: 0.41/0.44/0.52）。
   physical式で出ていたcrushタンクは出なくなった（材質は重量と配分にしか効かず二重取りが消えた）
 

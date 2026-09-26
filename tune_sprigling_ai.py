@@ -8,11 +8,13 @@ tune_balance_search.py（固定5駒種・SearchBot自己対戦）のSprigling版
 
 1 trial の評価:
   候補の重み(A) vs 現在の重み(B) を --pairs ペア。各ペアでランダムなSpriglingを配る
-  （ペアごとに構成が変わるので、特定の構成への過剰適応を防ぐ。verify_lab.ai_eval_scenario）:
-    --roster-mode mirror（既定）: 両者が同じ --roster-size 体を動員可能・同じ1体を最初の手駒に持つ
-    --roster-mode swap          : 両者が別々の構成。2局目は手番と一緒に構成も入れ替える
-    --stratified                : 構成内の階級を軽・中・重で均等にする（無指定なら階級も完全ランダム）
-  既存5種はどちらも常に動員できる。
+  （ペアごとに構成が変わるので、特定の構成への過剰適応を防ぐ。verify_lab.ai_eval_scenario）。
+  既定は対人戦と同じ形: 既存5種は使わず、各側のSprigling 5体（階級は軽・中・重を均等に割り当て）
+  が最初の手駒で、動員もそのSpriglingだけ。両者同じ構成（mirror）。
+    --roster-size N   : 各側のSpriglingの数
+    --no-stratified   : 階級も完全ランダム
+    --roster-mode swap: 両者が別々の構成。2局目は手番と一緒に構成も入れ替える
+    --with-base       : 既存5種も使う（ローグライトのボス戦などの形）
   目的関数 = Aのスコア（0.5なら現状と互角）。
   シード列は全trialで共通（共通乱数法: trial間の比較のノイズを減らす）。その代わり
   そのシード列への過剰適応が起きうるので、最後に選抜に使っていない新しいシードで
@@ -69,12 +71,13 @@ def suggest(trial, keys):
     return out
 
 
-ROSTER = {"size": 3, "stratified": False, "mode": "mirror"}  # main()で引数から上書き
+ROSTER = {"size": 5, "stratified": True, "mode": "mirror", "sprigling_only": True}  # main()で上書き
 
 
 def roster_scenario(seed, weights, overrides):
     return V.ai_eval_scenario(seed, {"type": "heuristic", "weights": weights}, "heuristic", overrides,
-                              ROSTER["size"], ROSTER["stratified"], ROSTER["mode"])
+                              ROSTER["size"], ROSTER["stratified"], ROSTER["mode"],
+                              ROSTER["sprigling_only"])
 
 
 def evaluate(weights, seeds, overrides, workers):
@@ -97,12 +100,16 @@ def main(argv=None):
     ap.add_argument("--max-confirm-pairs", type=int, default=400)
     ap.add_argument("--s1", type=float, default=0.55, help="SPRTのH1（改善とみなす期待スコア）")
     ap.add_argument("--out", default="best_sprigling_ai.json")
-    ap.add_argument("--roster-size", type=int, default=3, help="1ペアあたりのSpriglingの数（各側）")
-    ap.add_argument("--stratified", action="store_true", help="構成内の階級を軽・中・重で均等に割り当てる")
+    ap.add_argument("--roster-size", type=int, default=5, help="各側のSpriglingの数")
+    ap.add_argument("--no-stratified", action="store_true",
+                    help="構成内の階級も完全ランダムにする（既定は軽・中・重を均等に割り当て）")
     ap.add_argument("--roster-mode", choices=("mirror", "swap"), default="mirror",
                     help="mirror=両者同じ構成 / swap=両者別構成（2局目で構成も入れ替え）")
+    ap.add_argument("--with-base", action="store_true",
+                    help="既存5種も使う（既定は対人戦と同じくSpriglingだけ）")
     args = ap.parse_args(argv)
-    ROSTER.update(size=args.roster_size, stratified=args.stratified, mode=args.roster_mode)
+    ROSTER.update(size=args.roster_size, stratified=not args.no_stratified, mode=args.roster_mode,
+                  sprigling_only=not args.with_base)
 
     import optuna
     keys = args.keys.split(",") if args.keys else DEFAULT_KEYS
