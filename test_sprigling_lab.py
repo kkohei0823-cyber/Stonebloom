@@ -46,7 +46,7 @@ def test_power_scales_with_mobilization_cost():
 
 
 def test_physical_model_speed_and_multi_attack():
-    reset_config()
+    apply_config_overrides({"sprigling_stats": {"model": "physical"}, "combat": {"multi_attack": True}})
     from game import hit_count
     rng = random.Random(0)
     light = [S.derive_stats(S.random_genome(rng, "light"), 0) for _ in range(30)]
@@ -77,14 +77,14 @@ def test_guard_moves_base_damage_to_adjacent_sprigling():
     reset_config()
 
 
-def test_class_step_keeps_heavier_class_winning_1v1():
+def test_default_model_meets_1v1_rules():
+    """既定（mass式）: 重量級は軽量級・中量級に、苔兵・棘走・岩守・毒舞は軽量級に1対1で負けない。"""
     import verify_lab as V
-    apply_config_overrides({"sprigling_stats": {"model": "mass", "mass": {"class_step": 0.05}},
-                            "combat": {"multi_attack": False}})
-    rep = V.duel_report(60, "test", attribute=False)
-    assert rep["class"]["heavy_vs_light"]["loss"] == 0.0
-    assert all(r["loss"] == 0.0 for r in rep["core_vs_light"].values())
     reset_config()
+    rep = V.duel_report(80, "test", attribute=False)
+    assert rep["class"]["heavy_vs_light"]["loss"] == 0.0
+    assert rep["class"]["heavy_vs_middle"]["loss"] == 0.0
+    assert all(r["loss"] == 0.0 for r in rep["core_vs_light"].values())
 
 
 def test_validate_genome_rejects_illegal_builds():

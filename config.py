@@ -110,14 +110,15 @@ CONFIG = {
     "combat": {
         "base_speed": 100,
         "initiative": False,       # 速い駒から先に攻撃し、撃破された駒は反撃できない（探索では不採用）
-        "multi_attack": True,      # 素早さの比が閾値以上なら攻撃回数が増える（physical式とセットで採用）
+        # 連撃は「軽い駒が重い駒・既存駒に1対1で勝つ」原因そのもの（1対1条件つき探索で不採用）
+        "multi_attack": False,     # 素早さの比が閾値以上なら攻撃回数が増える
         "multi_attack_thresholds": [2.0, 3.0, 4.0],   # 2倍→2回, 3倍→3回, 4倍→4回
         "max_hits": 4,                 # 攻撃回数の上限
         "extra_hit_efficiency": 1.0,   # 2回目以降の1回あたりの威力（1.0でn倍、0.5で1+0.5(n-1)倍）
         "multi_attack_vs_base": True,  # 本拠への攻撃にも連撃を適用するか
         # 攻城: 本拠へのダメージに攻撃側の"siege"（Spriglingは重量から算出、既存駒は1.0）を掛ける。
         # 攻撃力が「敵駒を倒す」と「本拠を削る」の二重の価値を持つ非対称の対策案。
-        "siege": False,
+        "siege": True,             # 採用: 本拠へのダメージは作りではなく体重で決まる
         # 戦闘外回復（Spriglingのみ）: 敵と隣接していないラウンド終了時に最大HPのこの割合を回復。
         # HPの価値を「前線を入れ替えて粘る」形で上げる案。1対1の最中は発動しない。
         "sprigling_regen": 0.0,
@@ -164,23 +165,27 @@ CONFIG = {
     "sprigling_stats": {
         # "cost": 強さの総量を動員コストで決める（下のpower_*）
         # "physical": 部位の式と重量からHP・攻撃力・素早さを直接決める（下のphysical）
-        # 2026-09-26: tune_stat_model.py（40trial、階級バランス目標）で選んだphysical式を既定にした。
-        # 新しいシード200ペアでの再計測: 既存5種相手 軽0.52/中0.49/重0.53、
-        # 持ち込み総当たり 軽vs中0.50/中vs重0.53/軽vs重0.50（全てCIが0.5を含む）。
-        # 係数の意味は下のコメント。値は best_stat_model.json の丸め。
-        "model": "physical",
+        # 2026-09-26(2): 既定を mass 式に変更（1対1の絶対条件つき探索 tune_stat_model.py --model mass
+        # ＋手動の微調整。記録は runs/final_check2.json）。検証結果（新しいシード200ペア）:
+        #   1対1: 重量級→軽/中量級、苔兵・棘走・岩守・毒舞→軽量級 の負け 0%（各階級300体）
+        #   同重量の攻撃寄り vs 耐久寄り（強制動員）0.48
+        #   既存5種相手 軽0.50/中0.48/重0.48、持ち込み総当たり 軽vs中0.34/中vs重0.48/軽vs重0.31
+        # 旧既定のphysical式・cost式も model を切り替えれば使える。
+        "model": "mass",
         # "mass": 体の質量が総合的な強さを、部位の作りが攻撃/耐久への配分を決める（sprigling._mass_model）
         "mass": {
             "weight_ref": 250,
-            "atk0": 36, "hp0": 200,          # R/H/Wの平均的な作り・重量250で苔兵と同じ
-            "atk_mass_exp": 0.5, "hp_mass_exp": 0.5,
+            "atk0": 31.27, "hp0": 272.08,   # 重量250・平均的な作りでの攻撃力/HP
+            "atk_mass_exp": 0.614,   # 攻撃力 ∝ M^これ（重いほど一撃が重い）
+            "hp_mass_exp": 0.996,    # HP ∝ M^これ（重いほど打たれ強い）
             # 攻撃力 ∝ r^atk_shape_exp, HP ∝ r^-hp_shape_exp（r=攻撃:耐久の配分比）。
-            # 同じ値なら攻撃に振った分だけ耐久が割られ、攻撃力×HPは重量だけで決まる。
-            "atk_shape_exp": 0.5, "hp_shape_exp": 0.5,
-            "sigma_min": 0.2, "sigma_max": 0.8,   # r は 0.25〜4 → 攻撃力 ×0.5〜×2 / HP ×2〜×0.5
-            "speed_mass_exp": 1.0, "leg_speed_coef": 0.1,
-            "siege_mass_exp": 0.0,   # 本拠へのダメージ = atk0 × M^(atk_mass_exp+これ)
-            "class_step": 0.0,       # 階級が1つ上がるごとに攻撃力・HP計算用の実効重量を(1+これ)倍
+            # hp側を大きくしてある＝攻撃に振るほど耐久がそれ以上に落ちる（攻撃偏重の対策）。
+            "atk_shape_exp": 0.604, "hp_shape_exp": 0.829,
+            "sigma_min": 0.340, "sigma_max": 0.660,
+            "speed_mass_exp": 0.592, "leg_speed_coef": 0.158,
+            "siege_mass_exp": 0.007,   # 本拠へのダメージ = atk0 × M^(atk_mass_exp+これ)
+            # 階級が1つ上がるごとに攻撃力・HP計算用の実効重量を(1+これ)倍（境目での1対1の逆転防止）
+            "class_step": 0.12,
         },
         "physical": {
             "weight_ref": 250,        # 重量の基準点（中量級の標準ビルド付近）
