@@ -21,6 +21,7 @@ Sprigling（ステータスが固定でない駒）時代の検証環境。3つ�
   exploit          壊れたビルドの自動探索
   placement-sweep  配置コスト比率ごとの、Spriglingの採用率と勝率
   aa-test          両側同条件の対局でスコアが0.5になるか（検証環境そのもののバグ検出）
+  shape-split      攻撃寄りが強いのは式かAIかの切り分け
   repro            同じ対局を2回流して結果が一致するかの確認
 
 例:
@@ -517,6 +518,46 @@ def cmd_placement_sweep(args):
 
 
 # ============================================================
+# shape-split: 「攻撃寄りが強い」のは式（ゲームの仕組み）かAIの評価か
+# ============================================================
+def _shaped_piece(power, atk_hp_ratio, cost=450):
+    import math
+    return {"hp": round(math.sqrt(power / atk_hp_ratio)), "atk": round(math.sqrt(power * atk_hp_ratio)),
+            "move": 2, "cost": round(cost * 0.75), "produce_cost": cost, "upkeep": 0,
+            "ranged": False, "range": 0, "attribute": "crush", "role": "重装兵"}
+
+
+def cmd_shape_split(args):
+    """同コスト・同HP×攻撃力で形だけ違う2駒（攻撃寄り vs HP寄り）を、
+    (a) 既存5種と一緒に選べる / (b) それしか動員できない（強制）
+    × AIの駒評価が 従来式 / 苔兵の比率に合わせた式（hp_valuation_bonus=0.8）
+    の4条件で戦わせる。(b)で差が消えれば「AIの選り好み」、残れば「ゲームの仕組み」。"""
+    atk_p = _shaped_piece(8100, 0.25)
+    hp_p = _shaped_piece(8100, 0.12)
+    base = list(BASE_KINDS)
+    consistent = {"type": "heuristic", "weights": {"hp_valuation_bonus": 0.8}}
+    conds = [
+        ("mixed / default AI", base + ["S:atk"], base + ["S:hp"], "heuristic"),
+        ("mixed / consistent AI", base + ["S:atk"], base + ["S:hp"], consistent),
+        ("forced / default AI", ["S:atk"], ["S:hp"], "heuristic"),
+        ("forced / consistent AI", ["S:atk"], ["S:hp"], consistent),
+    ]
+    print(f"攻撃寄り HP{atk_p['hp']} ATK{atk_p['atk']} / HP寄り HP{hp_p['hp']} ATK{hp_p['atk']} "
+          f"（どちらも450RP・HP×ATK≈8100・crush）")
+    rows = {}
+    for name, ra, rb, bot in conds:
+        sc = {"config_overrides": {"pieces": {"S:atk": atk_p, "S:hp": hp_p}}, "spriglings": {},
+              "rosters": {"A": ra, "B": rb}, "bots": {"A": bot, "B": bot}}
+        res = run_pairs([(sc, f"split{args.seed}-{j}") for j in range(args.pairs)], args.workers)
+        summ = lab_stats.summarize([r["pair_score"] for r in res])
+        rows[name] = dict(summ, adoption_atk=adoption(res, "A"), adoption_hp=adoption(res, "B"))
+        print(f"  {name:24s} 攻撃寄り側 {summ['score']:.3f} CI{summ['ci95']} "
+              f"採用率 攻撃寄り{rows[name]['adoption_atk']:.0%} / HP寄り{rows[name]['adoption_hp']:.0%}",
+              flush=True)
+    print("record:", save_record("shape-split", args, {"rows": rows}))
+
+
+# ============================================================
 # repro: 再現性チェック
 # ============================================================
 def cmd_repro(args):
@@ -604,6 +645,11 @@ def main(argv=None):
     p.add_argument("--with-spriglings", action="store_true")
     p.add_argument("--seed", default="0")
     p.set_defaults(func=cmd_aa_test)
+
+    p = sub.add_parser("shape-split")
+    p.add_argument("--pairs", type=int, default=400)
+    p.add_argument("--seed", default="0")
+    p.set_defaults(func=cmd_shape_split)
 
     p = sub.add_parser("repro")
     p.add_argument("--bot", default="heuristic", choices=("heuristic", "search"))
